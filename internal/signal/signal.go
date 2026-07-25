@@ -172,7 +172,11 @@ Commands:
   raw <SELECT ...>                                          arbitrary read-only query (JSON out)
 
 <conv> is a conversation id or a case-insensitive substring of a name or phone number.
---json (before the "signal" keyword) emits raw JSON instead of formatted text.`
+--json (before the "signal" keyword) emits raw JSON instead of formatted text.
+
+--hours bounds recent activity only. Unread conversations are always listed,
+however long they have been sitting there, and are marked "outside the window"
+when their last activity predates it.`
 
 // popFlag removes "--name value" (or "--name" for bools) from args, returning
 // the value ("" if absent) and the remaining args. Minimal, order-independent.
