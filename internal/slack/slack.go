@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -42,9 +43,14 @@ import (
 	"github.com/syndtr/goleveldb/leveldb/opt"
 
 	"github.com/akostibas/lurk-skill/internal/digest"
+	"github.com/akostibas/lurk-skill/internal/macos"
 )
 
-var slackSupport = filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "Slack")
+// slackSupport is a function rather than a package var so it tracks HOME at
+// call time, matching signalDir() and letting tests point it at a fixture.
+func slackSupport() string {
+	return filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "Slack")
+}
 
 var tokenRe = regexp.MustCompile(`xoxc-\d+-\d+-\d+-[0-9a-f]+`)
 
@@ -124,7 +130,7 @@ func extractTokens() ([]string, error) {
 // openLevelDBCopy copies the Local Storage leveldb to a temp dir (dropping the
 // LOCK file) and opens it read-only, so we don't fight the running app's lock.
 func openLevelDBCopy() (*leveldb.DB, func(), error) {
-	src := filepath.Join(slackSupport, "Local Storage", "leveldb")
+	src := filepath.Join(slackSupport(), "Local Storage", "leveldb")
 	tmp, err := os.MkdirTemp("", "slackread-*")
 	if err != nil {
 		return nil, nil, err
@@ -176,7 +182,7 @@ func decodeLSValue(v []byte) []byte {
 // extractTokensRaw scans the leveldb files as raw bytes — finds only tokens in
 // uncompressed blocks, used only if the proper leveldb read fails.
 func extractTokensRaw(add func([]byte)) {
-	glob := filepath.Join(slackSupport, "Local Storage", "leveldb", "*")
+	glob := filepath.Join(slackSupport(), "Local Storage", "leveldb", "*")
 	files, _ := filepath.Glob(glob)
 	for _, f := range files {
 		if ext := filepath.Ext(f); ext != ".ldb" && ext != ".log" {
@@ -273,11 +279,11 @@ func cleanValue(dec []byte) string {
 }
 
 func cookieHeader() (string, error) {
-	db := filepath.Join(slackSupport, "Cookies")
+	db := filepath.Join(slackSupport(), "Cookies")
 	q := "SELECT name || '|' || hex(encrypted_value) FROM cookies WHERE host_key LIKE '%slack.com' AND name IN ('d','d-s');"
 	out, err := exec.Command("sqlite3", "-readonly", db, q).Output()
 	if err != nil {
-		return "", fmt.Errorf("reading Slack cookies DB: %w", err)
+		return "", fmt.Errorf("reading Slack's cookie database at %s — is the desktop app installed and signed in? (%w)", db, err)
 	}
 	enc := map[string][]byte{}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
@@ -303,7 +309,13 @@ func cookieHeader() (string, error) {
 		}
 	}
 	if key == nil {
-		return "", fmt.Errorf("could not decrypt the Slack 'd' session cookie with any Keychain key")
+		// Distinguish "the key was never stored" (Slack has never run here)
+		// from "the key is there but doesn't fit" (a stale entry from an
+		// older Slack build) — the two need different advice.
+		if _, err := macos.Secret("Slack Safe Storage"); err != nil {
+			return "", fmt.Errorf("no usable Slack encryption key: %w", err)
+		}
+		return "", errors.New("the Slack Keychain key doesn't decrypt this session cookie — sign out and back in to the desktop app")
 	}
 	parts := []string{"d=" + cleanValue(decryptV10(enc["d"], key))}
 	if enc["d-s"] != nil {
@@ -378,7 +390,23 @@ type workspace struct {
 	c                               *client
 }
 
+// checkInstalled reports a missing Slack desktop app in those terms, rather
+// than letting the absence surface several layers down as a sqlite3 or
+// Keychain failure the user can't act on.
+func checkInstalled() error {
+	if _, err := os.Stat(slackSupport()); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("the Slack desktop app isn't installed (no %s)", slackSupport())
+	}
+	if _, err := os.Stat(filepath.Join(slackSupport(), "Cookies")); errors.Is(err, os.ErrNotExist) {
+		return errors.New("Slack is installed but has no saved session — open the app and sign in")
+	}
+	return nil
+}
+
 func buildRegistry() ([]workspace, error) {
+	if err := checkInstalled(); err != nil {
+		return nil, err
+	}
 	cookie, err := cookieHeader()
 	if err != nil {
 		return nil, err

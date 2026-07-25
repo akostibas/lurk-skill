@@ -7,14 +7,16 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/pbkdf2"
+
+	"github.com/akostibas/lurk-skill/internal/macos"
 )
 
 // --- Signal Desktop local store (macOS) ---
@@ -28,7 +30,23 @@ func signalDir() string {
 // ("v10" + AES-128-CBC ciphertext); the AES key is derived from the
 // "Signal Safe Storage" macOS Keychain secret via Chromium's OSCrypt scheme
 // (PBKDF2-HMAC-SHA1, salt "saltysalt", 1003 iters, 16-byte key, IV = 16×0x20).
+// checkInstalled reports a missing Signal Desktop in those terms, so the
+// absence doesn't surface as a bare "no such file" naming an internal path.
+func checkInstalled() error {
+	dir := signalDir()
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("Signal Desktop isn't installed (no %s)", dir)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "sql", "db.sqlite")); errors.Is(err, os.ErrNotExist) {
+		return errors.New("Signal Desktop is installed but has no message database — open it and link your phone")
+	}
+	return nil
+}
+
 func sqlcipherKey() (string, error) {
+	if err := checkInstalled(); err != nil {
+		return "", err
+	}
 	raw, err := os.ReadFile(filepath.Join(signalDir(), "config.json"))
 	if err != nil {
 		return "", fmt.Errorf("read config.json: %w", err)
@@ -79,12 +97,7 @@ func sqlcipherKey() (string, error) {
 }
 
 func keychainSecret() ([]byte, error) {
-	out, err := exec.Command("security", "find-generic-password",
-		"-ws", "Signal Safe Storage").Output()
-	if err != nil {
-		return nil, fmt.Errorf("read 'Signal Safe Storage' from Keychain: %w", err)
-	}
-	return bytes.TrimRight(out, "\n"), nil
+	return macos.Secret("Signal Safe Storage")
 }
 
 func pkcs7Unpad(b []byte) ([]byte, error) {
