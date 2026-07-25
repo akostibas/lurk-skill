@@ -29,6 +29,9 @@ usage:
   --json      emit raw JSON instead of formatted text (before the command)
   --version   print the build version
 
+--hours bounds recent activity. Anything still unread is listed however old it
+is, marked "outside the window" when it predates one.
+
 lurk only ever reads. There is no code path that posts, replies, reacts,
 joins, or marks anything read.
 `

@@ -461,13 +461,21 @@ func str(v any) string {
 	return s
 }
 
+// tsLayout is the timestamp format in every text-mode line. It is a de-facto
+// output contract: `slack search|history|replies` print it as a leading
+// "[YYYY-MM-DD HH:MM]" and downstream callers parse it to window results.
+// Changing it fails *silently* — a caller's filter simply matches nothing and
+// the run looks like a quiet day rather than an error. Keep it in step with
+// signal's tsLayout, and see the tests pinning both.
+const tsLayout = "2006-01-02 15:04"
+
 func fmtTS(ts string) string {
 	sec, _, _ := strings.Cut(ts, ".")
 	n, err := strconv.ParseInt(sec, 10, 64)
 	if err != nil {
 		return ts
 	}
-	return time.Unix(n, 0).Format("2006-01-02 15:04")
+	return time.Unix(n, 0).Format(tsLayout)
 }
 
 func userMap(c *client) map[string]string {

@@ -50,11 +50,19 @@ func asInt(v any) int64 {
 	}
 }
 
+// tsLayout is the timestamp format in every text-mode line. It is a de-facto
+// output contract: `signal history` and `slack search|history` print it as a
+// leading "[YYYY-MM-DD HH:MM]" and downstream callers parse it to window
+// results. Changing it fails *silently* — a caller's filter simply matches
+// nothing and the run looks like a quiet day rather than an error. Keep it
+// in step with slack's fmtTS, and see the tests pinning both.
+const tsLayout = "2006-01-02 15:04"
+
 func fmtTime(ms int64) string {
 	if ms <= 0 {
 		return ""
 	}
-	return time.UnixMilli(ms).Local().Format("2006-01-02 15:04")
+	return time.UnixMilli(ms).Local().Format(tsLayout)
 }
 
 func printJSON(v any) {
@@ -258,11 +266,23 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count int) err
 	return nil
 }
 
+// windowStart is the cutoff `--hours` describes: the start of the activity
+// window. It bounds the "recent" bucket only — see summaryRows.
+func windowStart(hours int) int64 {
+	return time.Now().Add(-time.Duration(hours) * time.Hour).UnixMilli()
+}
+
 // summaryRows splits active conversations into those Signal considers unread
 // (its stored unreadCount, plus manually marked-unread) and those merely active
 // within the window. Shared by `signal summary` and the cross-source digest.
+//
+// Only the "recent" bucket is windowed, and that asymmetry is deliberate: unread
+// is a *state*, recent activity is an *event*. A DM you left unread on Tuesday is
+// still waiting on you, so dropping it from `--hours 1` would break the question
+// the digest exists to answer. digestItems marks the ones that predate the window
+// so their presence is explained rather than surprising.
 func summaryRows(db *sqliteDB, hours int) (unread, recent []map[string]any, err error) {
-	sinceMs := time.Now().Add(-time.Duration(hours) * time.Hour).UnixMilli()
+	sinceMs := windowStart(hours)
 	q := fmt.Sprintf(`SELECT c.id, c.type, %[1]s AS name,
 		COALESCE(json_extract(c.json,'$.unreadCount'),0) AS unread,
 		COALESCE(json_extract(c.json,'$.markedUnread'),0) AS markedUnread,
@@ -291,6 +311,15 @@ func digestItems(db *sqliteDB, hours int) ([]digest.Item, error) {
 	if err != nil {
 		return nil, err
 	}
+	return itemsFrom(unread, recent, windowStart(hours)), nil
+}
+
+// itemsFrom is the single place summary output is shaped, for both the text and
+// JSON forms of `signal summary` and for the cross-source digest. Keeping it
+// pure (no DB) is what lets the field set be tested — the JSON form used to be
+// built separately from raw rows and quietly carried message bodies the text
+// form withheld.
+func itemsFrom(unread, recent []map[string]any, sinceMs int64) []digest.Item {
 	item := func(k digest.Kind, r map[string]any, text, note string) digest.Item {
 		return digest.Item{
 			Source: "signal",
@@ -308,12 +337,18 @@ func digestItems(db *sqliteDB, hours int) ([]digest.Item, error) {
 		if n > 0 {
 			note = fmt.Sprintf("%d unread", n)
 		}
+		// An unread conversation is listed however old it is. Say so on the line,
+		// otherwise a months-stale DM sitting above this morning's activity looks
+		// like the window is broken.
+		if last := asInt(r["last_at"]); last > 0 && last < sinceMs {
+			note += ", outside the window"
+		}
 		items = append(items, item(digest.Unread, r, truncate(oneLine(asStr(r["last_body"])), 78), note))
 	}
 	for _, r := range recent {
 		items = append(items, item(digest.Recent, r, "", ""))
 	}
-	return items, nil
+	return items
 }
 
 // Digest returns catch-up items for Signal, for the cross-source `lurk summary`.
@@ -326,18 +361,19 @@ func Digest(hours int) ([]digest.Item, error) {
 	return digestItems(db, hours)
 }
 
+// cmdSummary renders the same items either way. --json used to dump the raw
+// rows, which exposed a message body for every recently-active conversation that
+// the text form deliberately withheld — a wider surface on the machine-readable
+// path, which is the one most likely to end up in a log or another agent's
+// context. Both forms now come from itemsFrom, so they can't drift apart again.
 func cmdSummary(db *sqliteDB, jsonOut bool, hours int) error {
-	if jsonOut {
-		unread, recent, err := summaryRows(db, hours)
-		if err != nil {
-			return err
-		}
-		printJSON(map[string]any{"unread": unread, "recent": recent})
-		return nil
-	}
 	items, err := digestItems(db, hours)
 	if err != nil {
 		return err
+	}
+	if jsonOut {
+		printJSON(items)
+		return nil
 	}
 	digest.Render(os.Stdout, items)
 	return nil
