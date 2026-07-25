@@ -16,8 +16,8 @@ jobs:
   test:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - name: Vendor SQLCipher
@@ -37,10 +37,21 @@ jobs:
       - name: build
         run: make build
 
+  # Runs the gitleaks binary directly rather than gitleaks-action, which infers
+  # a commit range from the push event and so cannot scan a push containing the
+  # root commit (`<root>^` doesn't resolve — it fails having scanned nothing).
+  # Scanning full history every time is cheap here and can't silently no-op.
+  # Version is pinned to match .pre-commit-config.yaml so local and CI agree.
   gitleaks:
     runs-on: ubuntu-latest
+    env:
+      GITLEAKS_VERSION: 8.30.1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      - name: gitleaks (full history)
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks git . --no-banner --redact
