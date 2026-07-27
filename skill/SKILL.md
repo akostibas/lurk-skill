@@ -42,6 +42,7 @@ lurk slack channels <ws> [--filter s] [--types t]
 lurk slack history  <ws> <#channel|ID> [--limit n] [--oldest ts] [--cursor c]
 lurk slack replies  <ws> <#channel|ID> <thread_ts> [--limit n]
 lurk slack search   <ws> <query> [--count n]
+lurk slack file     <ws> <fileID|url_private> [--out path]
 lurk slack raw      <ws> <method> [k=v ...]
 
 lurk signal conversations [--filter s] [--dms|--groups] [--limit n]
@@ -80,6 +81,15 @@ Use `--user U…` to ask the same question about a teammate.
 **Reading a specific conversation** → `slack history` / `slack replies` /
 `signal history`. **Finding something** → `slack search` (Slack's own search
 syntax) or `signal search` (substring over message text).
+
+**Getting the actual image/file behind a message** → `lurk slack file <ws>
+<fileID>`. Text commands surface only a message's words, so a screenshot-only
+report reads as empty. `--json slack history`/`replies` expose each attachment's
+`id` (and `url_private`); pass either to `slack file` to download the bytes (an
+authenticated read-only GET, restricted to Slack's file hosts). Without `--out`
+it saves to the temp dir under the file's own name and prints the path, which you
+can then read/view; `--out -` streams to stdout. (Signal attachments aren't
+wired up yet — Slack only.)
 
 ## Limitations worth knowing before you report a gap
 
