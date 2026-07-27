@@ -31,6 +31,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -70,6 +71,7 @@ var readMethods = map[string]bool{
 	"users.list":            true,
 	"users.info":            true,
 	"users.conversations":   true,
+	"files.info":            true,
 	"search.messages":       true,
 	"search.all":            true,
 	"reactions.get":         true,
@@ -379,6 +381,57 @@ func (c *client) call(method string, params map[string]string) (map[string]any, 
 		return out, nil
 	}
 	return nil, fmt.Errorf("%s: rate-limited after retries", method)
+}
+
+// download fetches a Slack file's raw bytes over HTTPS using the session's
+// bearer token + cookie. Slack serves file contents (url_private) not from the
+// Web API but from files.slack.com, gated on `Authorization: Bearer <token>`.
+// This is a plain authenticated GET — the same class of access as viewing the
+// file in the app, a read — not an API write, so it sits outside the readMethods
+// gate (which guards api.slack.com method calls). It is restricted to Slack's
+// own file hosts so a caller can't turn it into an arbitrary URL fetcher.
+func (c *client) download(fileURL string) (body []byte, contentType string, err error) {
+	u, err := url.Parse(fileURL)
+	if err != nil {
+		return nil, "", fmt.Errorf("bad file url %q: %w", fileURL, err)
+	}
+	if u.Scheme != "https" || !isSlackFileHost(u.Host) {
+		return nil, "", fmt.Errorf("refusing to fetch %q; downloads are limited to Slack file hosts", fileURL)
+	}
+	req, err := http.NewRequest("GET", fileURL, nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Cookie", c.cookie)
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh) slack-read/1.0")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	contentType = resp.Header.Get("Content-Type")
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, contentType, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, contentType, fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+	}
+	// When the token/cookie is rejected, Slack answers 200 with an HTML sign-in
+	// page rather than an error — detect that so we never hand back a login page
+	// as if it were the file bytes.
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "text/html") {
+		return nil, contentType, errors.New("download returned an HTML page, not file bytes — the session/token was rejected (try signing out and back in to the Slack desktop app)")
+	}
+	return b, contentType, nil
+}
+
+// isSlackFileHost limits downloads to Slack's own file-serving hosts.
+func isSlackFileHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "files.slack.com" || host == "slack-files.com" ||
+		strings.HasSuffix(host, ".slack.com") || strings.HasSuffix(host, ".slack-files.com")
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +769,70 @@ func cmdReplies(w workspace, channel, threadTS string, limit int, asJSON bool) {
 		}
 		fmt.Printf("[%s] %s: %s\n", fmtTS(str(m["ts"])), who, renderText(str(m["text"]), names))
 	}
+}
+
+// cmdFile retrieves a Slack attachment and writes its bytes to disk — the one
+// piece of a message the text-only commands can't surface. It accepts either a
+// file ID (resolved to its private URL via files.info) or a url_private /
+// url_private_download URL already in hand from `--json` message output.
+// Read-only: it only GETs the file, the same access the user has in the app.
+func cmdFile(w workspace, ref, out string, asJSON bool) {
+	fileURL := ref
+	var name, mimetype string
+	// A bare (non-URL) ref is a file ID — resolve it to a download URL.
+	if !strings.HasPrefix(ref, "https://") && !strings.HasPrefix(ref, "http://") {
+		info, err := w.c.call("files.info", map[string]string{"file": ref})
+		if err != nil {
+			fail(err)
+		}
+		f, _ := info["file"].(map[string]any)
+		fileURL = firstNonEmpty(str(f["url_private_download"]), str(f["url_private"]))
+		name = str(f["name"])
+		mimetype = str(f["mimetype"])
+		if fileURL == "" {
+			fail(fmt.Errorf("file %q has no downloadable URL (external, deleted, or no access)", ref))
+		}
+	}
+
+	body, ct, err := w.c.download(fileURL)
+	if err != nil {
+		fail(err)
+	}
+	if mimetype == "" {
+		mimetype = ct
+	}
+
+	// Choose an output path: honour --out; otherwise land in the temp dir under
+	// the file's own name (or the URL basename) so callers get a stable path.
+	if out == "" {
+		base := name
+		if base == "" {
+			if u, perr := url.Parse(fileURL); perr == nil {
+				base = path.Base(u.Path)
+			}
+		}
+		if base == "" || base == "." || base == "/" {
+			base = "lurk-slack-file"
+		}
+		out = filepath.Join(os.TempDir(), base)
+	}
+	if out == "-" {
+		os.Stdout.Write(body)
+		return
+	}
+	if err := os.WriteFile(out, body, 0o600); err != nil {
+		fail(err)
+	}
+	abs, _ := filepath.Abs(out)
+	if asJSON {
+		printJSON(map[string]any{"path": abs, "bytes": len(body), "mimetype": mimetype, "name": name})
+		return
+	}
+	extra := ""
+	if mimetype != "" {
+		extra = "  (" + mimetype + ")"
+	}
+	fmt.Printf("saved %d bytes → %s%s\n", len(body), abs, extra)
 }
 
 func cmdSearch(w workspace, query string, count int, asJSON bool) {
@@ -1209,8 +1326,14 @@ usage:
   lurk [--json] slack history  <workspace> <#channel|ID> [--limit n] [--oldest ts] [--cursor c]
   lurk [--json] slack replies  <workspace> <#channel|ID> <thread_ts> [--limit n]
   lurk [--json] slack search   <workspace> <query> [--count n]
+  lurk [--json] slack file     <workspace> <fileID|url_private> [--out path]
 
 <workspace> is a case-insensitive substring of the team name or URL.
+
+'file' downloads an attachment's bytes (read-only GET). Pass a file ID from
+message JSON, or a url_private/url_private_download URL. Without --out it writes
+to the temp dir under the file's own name and prints the path; --out - streams
+the bytes to stdout.
 `
 
 // Run executes one `lurk slack …` subcommand.
@@ -1272,6 +1395,20 @@ func Run(args []string, asJSON bool) error {
 			return err
 		}
 		cmdReplies(w, rest[1], rest[2], *limit, asJSON)
+
+	case "file":
+		fs := flag.NewFlagSet("file", flag.ExitOnError)
+		out := fs.String("out", "", "output path (default: temp dir under the file's name; \"-\" for stdout)")
+		rest := parseSub(fs, args[1:], 2, "file <workspace> <fileID|url_private>")
+		reg, err := buildRegistry()
+		if err != nil {
+			return err
+		}
+		w, err := pick(reg, rest[0])
+		if err != nil {
+			return err
+		}
+		cmdFile(w, rest[1], *out, asJSON)
 
 	case "summary":
 		fs := flag.NewFlagSet("summary", flag.ExitOnError)

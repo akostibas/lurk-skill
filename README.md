@@ -55,7 +55,7 @@ Signal Desktop is what `lurk` can see.
 ```
 lurk summary [--hours 24] [--workspace s] [--no-slack] [--no-signal]
 lurk slack   <command> […]     # workspaces, summary, mentions, channels,
-                               # history, replies, search, raw
+                               # history, replies, search, file, raw
 lurk signal  <command> […]     # conversations, history, search, summary,
                                # whoami, raw
 ```
