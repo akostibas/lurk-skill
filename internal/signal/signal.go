@@ -166,7 +166,7 @@ Usage: lurk [--json] signal <command> [args]
 Commands:
   conversations [--filter s] [--dms|--groups] [--limit n]   list conversations by recent activity
   history <conv> [--limit n] [--before rowid]               messages in a conversation (oldest→newest)
-  search <query> [--conv c] [--count n]                     substring search over message text
+  search <query> [--conv c] [--count n] [-C n | -A n -B n]  substring search over message text
   summary [--hours n]                                       unread + recent-activity digest
   whoami                                                    your own phone / ACI
   raw <SELECT ...>                                          arbitrary read-only query (JSON out)
@@ -176,15 +176,38 @@ Commands:
 
 --hours bounds recent activity only. Unread conversations are always listed,
 however long they have been sitting there, and are marked "outside the window"
-when their last activity predates it.`
+when their last activity predates it.
+
+search can show the messages around each hit, grep-style: -C/--context n lines
+on each side, or -A/--after-context and -B/--before-context to set the sides
+independently. With context, hits are grouped by conversation and the matched
+line is marked ">".`
 
 // popFlag removes "--name value" (or "--name" for bools) from args, returning
-// the value ("" if absent) and the remaining args. Minimal, order-independent.
+// the value ("" if absent) and the remaining args. Thin wrapper over popFlags
+// for the common single-long-flag case.
 func popFlag(args []string, name string, hasVal bool) (string, []string) {
+	return popFlags(args, hasVal, "--"+name)
+}
+
+// popFlags removes the first occurrence of any of the given flag tokens from
+// args, returning its value ("" if absent, "true" for a valueless bool flag)
+// and the remaining args. Tokens are matched literally, so a flag with both a
+// long and a short spelling (grep-style "-A"/"--after-context") is one call.
+// Minimal and order-independent.
+func popFlags(args []string, hasVal bool, tokens ...string) (string, []string) {
+	is := func(a string) bool {
+		for _, t := range tokens {
+			if a == t {
+				return true
+			}
+		}
+		return false
+	}
 	out := args[:0:0]
 	val := ""
 	for i := 0; i < len(args); i++ {
-		if args[i] == "--"+name {
+		if is(args[i]) {
 			if hasVal && i+1 < len(args) {
 				val = args[i+1]
 				i++
@@ -196,6 +219,14 @@ func popFlag(args []string, name string, hasVal bool) (string, []string) {
 		out = append(out, args[i])
 	}
 	return val, out
+}
+
+// contextLines resolves grep's context flags for `signal search`: -C/--context
+// sets lines on both sides, while -A/--after-context and -B/--before-context
+// override their own side. Absent flags mean 0 (no surrounding context).
+func contextLines(contextS, beforeS, afterS string) (before, after int) {
+	ctx := atoiOr(contextS, 0)
+	return atoiOr(beforeS, ctx), atoiOr(afterS, ctx)
 }
 
 func atoiOr(s string, def int) int {
@@ -251,10 +282,14 @@ func Run(args []string, jsonOut bool) error {
 	case "search":
 		convArg, rest := popFlag(args, "conv", true)
 		countS, rest := popFlag(rest, "count", true)
+		ctxS, rest := popFlags(rest, true, "-C", "--context")
+		afterS, rest := popFlags(rest, true, "-A", "--after-context")
+		beforeS, rest := popFlags(rest, true, "-B", "--before-context")
 		if len(rest) == 0 {
 			return fmt.Errorf("search needs a query")
 		}
-		err = cmdSearch(db, jsonOut, strings.Join(rest, " "), convArg, atoiOr(countS, 25))
+		before, after := contextLines(ctxS, beforeS, afterS)
+		err = cmdSearch(db, jsonOut, strings.Join(rest, " "), convArg, atoiOr(countS, 25), before, after)
 
 	case "summary":
 		hoursS, _ := popFlag(args, "hours", true)

@@ -48,7 +48,7 @@ lurk slack raw      <ws> <method> [k=v ...]
 
 lurk signal conversations [--filter s] [--dms|--groups] [--limit n]
 lurk signal history <conv> [--limit n] [--before rowid]
-lurk signal search  <query> [--conv c] [--count n]
+lurk signal search  <query> [--conv c] [--count n] [-C n | -A n -B n]
 lurk signal summary [--hours n]
 lurk signal whoami
 lurk signal raw     <SELECT ...>
@@ -82,6 +82,14 @@ Use `--user U…` to ask the same question about a teammate.
 **Reading a specific conversation** → `slack history` / `slack replies` /
 `signal history`. **Finding something** → `slack search` (Slack's own search
 syntax) or `signal search` (substring over message text).
+
+**Reading the conversation *around* a Signal hit** → `signal search` takes
+grep's context flags: `-C n` (or `--context n`) shows n messages on each side of
+every match, and `-A n` / `-B n` set the after/before sides independently. With
+context the hits are grouped by conversation and the matched line is marked with
+`>` — so a match from days ago comes back with the exchange it sat in, without a
+second `history` call to reconstruct it. (Slack threads already travel with their
+replies; this is the flat-conversation equivalent for Signal.)
 
 **Opening a thread you just saw** → `slack search`, `history`, and `mentions`
 tag each thread with a short `[code]`. Pass it straight to `slack replies <code>`
