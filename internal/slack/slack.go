@@ -721,6 +721,16 @@ func cmdHistory(w workspace, channel string, limit int, oldest, cursor string, a
 	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
 		msgs[i], msgs[j] = msgs[j], msgs[i]
 	}
+	// A message with replies is a thread root — give it a session code so it can
+	// be reopened with `lurk slack replies <code>`. Its own ts is the root ts.
+	for _, mv := range msgs {
+		m, _ := mv.(map[string]any)
+		if rc, ok := m["reply_count"].(float64); ok && rc > 0 {
+			if code := assignCode(locator{Workspace: w.Team, Channel: cid, ThreadTS: str(m["ts"])}); code > 0 {
+				m["lurk_code"] = code
+			}
+		}
+	}
 	if asJSON {
 		printJSON(map[string]any{"channel": cname, "channel_id": cid, "messages": msgs, "next_cursor": nextCursor(r)})
 		return
@@ -735,7 +745,11 @@ func cmdHistory(w workspace, channel string, limit int, oldest, cursor string, a
 		}
 		fmt.Printf("[%s] %s: %s\n", fmtTS(str(m["ts"])), who, renderText(str(m["text"]), names))
 		if rc, ok := m["reply_count"].(float64); ok && rc > 0 {
-			fmt.Printf("    ↳ %d replies (thread_ts %s)\n", int(rc), str(m["ts"]))
+			if code, ok := m["lurk_code"].(int); ok && code > 0 {
+				fmt.Printf("    ↳ %d replies — reopen with: lurk slack replies %d\n", int(rc), code)
+			} else {
+				fmt.Printf("    ↳ %d replies (thread_ts %s)\n", int(rc), str(m["ts"]))
+			}
 		}
 	}
 	if nc := nextCursor(r); nc != "" {
@@ -844,6 +858,19 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 	}
 	mm, _ := r["messages"].(map[string]any)
 	matches := asList(mm["matches"])
+	// Attach a session thread code to every match up front, so it lands in both
+	// the JSON (`lurk_code`) and the text rendering below.
+	for _, mv := range matches {
+		m, _ := mv.(map[string]any)
+		ch, _ := m["channel"].(map[string]any)
+		pl := str(m["permalink"])
+		if code := assignCode(locator{
+			Workspace: w.Team, Channel: str(ch["id"]),
+			ThreadTS: threadRootFromPermalink(pl, str(m["ts"])), Permalink: pl,
+		}); code > 0 {
+			m["lurk_code"] = code
+		}
+	}
 	if asJSON {
 		printJSON(matches)
 		return
@@ -852,16 +879,27 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 	if t, ok := mm["total"].(float64); ok {
 		total = int(t)
 	}
-	fmt.Printf("# %d matches for: %s\n\n", total, query)
+	fmt.Printf("# %d matches for: %s  (open a thread with: lurk slack replies <code>)\n\n", total, query)
 	for _, mv := range matches {
 		m, _ := mv.(map[string]any)
 		ch, _ := m["channel"].(map[string]any)
 		who := firstNonEmpty(str(m["username"]), str(m["user"]), "?")
 		fmt.Printf("[%s] #%s %s: %s\n", fmtTS(str(m["ts"])), str(ch["name"]), who, str(m["text"]))
-		if pl := str(m["permalink"]); pl != "" {
-			fmt.Printf("    %s\n", pl)
+		if tag, pl := codeTag(m["lurk_code"]), str(m["permalink"]); tag != "" || pl != "" {
+			fmt.Printf("    %s%s\n", tag, pl)
 		}
 	}
+}
+
+// codeTag renders the "[n] " prefix for a thread code pulled from a result map,
+// or "" when there's no code. Kept out of the leading "[timestamp]" slot on
+// purpose: downstream callers parse that timestamp positionally (see tsLayout),
+// so the code rides alongside the permalink instead.
+func codeTag(v any) string {
+	if code, ok := v.(int); ok && code > 0 {
+		return fmt.Sprintf("[%d] ", code)
+	}
+	return ""
 }
 
 func firstNonEmpty(vs ...string) string {
@@ -1178,6 +1216,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	sort.Slice(mentions, func(i, j int) bool { return str(mentions[i]["ts"]) > str(mentions[j]["ts"]) })
 
 	type digest struct {
+		Code        int    `json:"code,omitempty"`
 		MentionTS   string `json:"mention_ts"`
 		ChannelID   string `json:"channel_id"`
 		ChannelName string `json:"channel"`
@@ -1256,6 +1295,14 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 		return out[i].MentionTS > out[j].MentionTS
 	})
 
+	// Assign codes in display order so the printed [n] climb top-to-bottom.
+	for i := range out {
+		out[i].Code = assignCode(locator{
+			Workspace: w.Team, Channel: out[i].ChannelID,
+			ThreadTS: out[i].ThreadTS, Permalink: out[i].Permalink,
+		})
+	}
+
 	if asJSON {
 		printJSON(map[string]any{"member": memberID, "member_name": res.user(memberID), "hours": hours, "mentions": out})
 		return
@@ -1285,8 +1332,8 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 			fmt.Printf("      thread: %d repl%s, last @%s at %s\n",
 				d.ReplyCount, plural(d.ReplyCount), d.LatestWho, fmtTS(d.LatestTS))
 		}
-		if d.Permalink != "" {
-			fmt.Printf("      %s\n", d.Permalink)
+		if tag, pl := codeTag(d.Code), d.Permalink; tag != "" || pl != "" {
+			fmt.Printf("      %s%s\n", tag, pl)
 		}
 		fmt.Println()
 	}
@@ -1302,6 +1349,65 @@ func threadRootFromPermalink(permalink, fallback string) string {
 		}
 	}
 	return fallback
+}
+
+// normalizeTS accepts a Slack timestamp in any of the forms that appear in
+// lurk's own output and returns the decimal thread_ts the API wants. It handles
+// the permalink id form `p1785126651515049` (the `p`-prefixed, dot-less digits
+// printed in search/history) by splitting off the trailing 6 microsecond
+// digits; already-decimal ids pass through untouched.
+func normalizeTS(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "p")
+	if strings.Contains(s, ".") {
+		return s
+	}
+	if len(s) > 6 && isAllDigits(s) {
+		return s[:len(s)-6] + "." + s[len(s)-6:]
+	}
+	return s
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// parsePermalink pulls the workspace host, channel ID, and thread root ts out of
+// a Slack message permalink like
+// https://team.slack.com/archives/C08JW756EUT/p1785126651515049?thread_ts=…
+// The `?thread_ts=` query param, when present, is the true thread root — more
+// reliable than the path's own p-id, which is the clicked message (a reply's id
+// would open the wrong thread). ok is false if it isn't a usable message link.
+func parsePermalink(raw string) (host, channel, threadTS string, ok bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return "", "", "", false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i, p := range parts {
+		if p == "archives" && i+1 < len(parts) {
+			channel = parts[i+1]
+			if i+2 < len(parts) {
+				threadTS = normalizeTS(parts[i+2])
+			}
+		}
+	}
+	if t := u.Query().Get("thread_ts"); t != "" {
+		threadTS = t
+	}
+	return u.Host, channel, threadTS, channel != "" && threadTS != ""
+}
+
+func isURL(s string) bool {
+	return strings.HasPrefix(s, "https://") || strings.HasPrefix(s, "http://")
 }
 
 func plural(n int) string {
@@ -1324,11 +1430,16 @@ usage:
   lurk [--json] slack mentions <workspace> [--user U…] [--hours 48] [--count 50]
   lurk [--json] slack channels <workspace> [--types t] [--filter s]
   lurk [--json] slack history  <workspace> <#channel|ID> [--limit n] [--oldest ts] [--cursor c]
+  lurk [--json] slack replies  <code|permalink> [--limit n]
   lurk [--json] slack replies  <workspace> <#channel|ID> <thread_ts> [--limit n]
   lurk [--json] slack search   <workspace> <query> [--count n]
   lurk [--json] slack file     <workspace> <fileID|url_private> [--out path]
 
 <workspace> is a case-insensitive substring of the team name or URL.
+
+search, history, and mentions tag each thread with a short [code]. Pass that
+code to 'replies' to reopen the thread — no need to copy a thread_ts. Codes last
+for the session; a full permalink works too (and across sessions).
 
 'file' downloads an attachment's bytes (read-only GET). Pass a file ID from
 message JSON, or a url_private/url_private_download URL. Without --out it writes
@@ -1385,16 +1496,26 @@ func Run(args []string, asJSON bool) error {
 	case "replies":
 		fs := flag.NewFlagSet("replies", flag.ExitOnError)
 		limit := fs.Int("limit", 100, "max messages")
-		rest := parseSub(fs, args[1:], 3, "replies <workspace> <#channel|ID> <thread_ts>")
+		// replies takes either a single locator (a session code from search/
+		// history/mentions output, or a full Slack permalink) or the legacy
+		// <workspace> <#channel|ID> <thread_ts> triple. Grab the leading
+		// positionals ourselves so we can branch on how many there are.
+		pos, flags := leadingPositionals(args[1:])
+		fs.Parse(flags)
+		wsHint, channel, threadTS, err := resolveRepliesTarget(pos)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "usage: replies <code> | <permalink> | <workspace> <#channel|ID> <thread_ts>")
+			return err
+		}
 		reg, err := buildRegistry()
 		if err != nil {
 			return err
 		}
-		w, err := pick(reg, rest[0])
+		w, err := pick(reg, wsHint)
 		if err != nil {
 			return err
 		}
-		cmdReplies(w, rest[1], rest[2], *limit, asJSON)
+		cmdReplies(w, channel, threadTS, *limit, asJSON)
 
 	case "file":
 		fs := flag.NewFlagSet("file", flag.ExitOnError)
@@ -1486,6 +1607,48 @@ func Run(args []string, asJSON bool) error {
 		os.Exit(2)
 	}
 	return nil
+}
+
+// leadingPositionals splits the leading non-flag args from the rest, for
+// subcommands whose positional count varies (Go's flag package stops at the
+// first non-flag, so flags must trail the positionals regardless).
+func leadingPositionals(args []string) (pos, rest []string) {
+	i := 0
+	for i < len(args) && !strings.HasPrefix(args[i], "-") {
+		i++
+	}
+	return args[:i], args[i:]
+}
+
+// resolveRepliesTarget turns `replies` positionals into a (workspace hint,
+// channel, thread_ts). It accepts, in order of preference:
+//   - one permalink   → workspace host, channel, and thread root from the URL;
+//   - one session code → the locator cached when the thread was last listed;
+//   - three args       → the legacy <workspace> <#channel|ID> <thread_ts>, with
+//     the ts normalized so a pasted p-form id works too.
+func resolveRepliesTarget(pos []string) (wsHint, channel, threadTS string, err error) {
+	switch len(pos) {
+	case 1:
+		if isURL(pos[0]) {
+			host, ch, ts, ok := parsePermalink(pos[0])
+			if !ok {
+				return "", "", "", fmt.Errorf("could not read channel and thread from permalink %q", pos[0])
+			}
+			return host, ch, ts, nil
+		}
+		if code, cerr := strconv.Atoi(pos[0]); cerr == nil {
+			loc, ok := resolveCode(code)
+			if !ok {
+				return "", "", "", fmt.Errorf("no thread with code %d in this session — run search/history/mentions first, or pass the permalink", code)
+			}
+			return loc.Workspace, loc.Channel, loc.ThreadTS, nil
+		}
+		return "", "", "", fmt.Errorf("%q is neither a session code nor a permalink", pos[0])
+	case 3:
+		return pos[0], pos[1], normalizeTS(pos[2]), nil
+	default:
+		return "", "", "", fmt.Errorf("expected 1 (code or permalink) or 3 (workspace channel thread_ts) arguments, got %d", len(pos))
+	}
 }
 
 // parseSub splits positional args (which precede flags) from flags, since Go's

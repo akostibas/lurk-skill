@@ -40,6 +40,7 @@ lurk slack summary  <ws> [--mentions-hours 24] [--threads-hours 8]
 lurk slack mentions <ws> [--user U…] [--hours 48] [--count 50]
 lurk slack channels <ws> [--filter s] [--types t]
 lurk slack history  <ws> <#channel|ID> [--limit n] [--oldest ts] [--cursor c]
+lurk slack replies  <code|permalink> [--limit n]
 lurk slack replies  <ws> <#channel|ID> <thread_ts> [--limit n]
 lurk slack search   <ws> <query> [--count n]
 lurk slack file     <ws> <fileID|url_private> [--out path]
@@ -81,6 +82,13 @@ Use `--user U…` to ask the same question about a teammate.
 **Reading a specific conversation** → `slack history` / `slack replies` /
 `signal history`. **Finding something** → `slack search` (Slack's own search
 syntax) or `signal search` (substring over message text).
+
+**Opening a thread you just saw** → `slack search`, `history`, and `mentions`
+tag each thread with a short `[code]`. Pass it straight to `slack replies <code>`
+— no need to copy a `thread_ts`. Codes are stable for the session (`--json`
+carries them as `lurk_code`/`code`); a full permalink works too, and is the
+durable form to keep across sessions. Prefer the code over transcribing a
+16-digit id — it's the same thread with far less to get wrong.
 
 **Getting the actual image/file behind a message** → `lurk slack file <ws>
 <fileID>`. Text commands surface only a message's words, so a screenshot-only
