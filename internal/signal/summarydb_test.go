@@ -32,10 +32,11 @@ func newTestDB(t *testing.T) *sqliteDB {
 	if err := db.exec(`
 		CREATE TABLE conversations (
 			id TEXT PRIMARY KEY, type TEXT, name TEXT, profileFullName TEXT,
-			profileName TEXT, e164 TEXT, active_at INTEGER, json TEXT);
+			profileName TEXT, e164 TEXT, serviceId TEXT, active_at INTEGER, json TEXT);
 		CREATE TABLE messages (
 			id TEXT PRIMARY KEY, conversationId TEXT, body TEXT,
-			sent_at INTEGER, received_at INTEGER, type TEXT);
+			sent_at INTEGER, received_at INTEGER, type TEXT,
+			hasAttachments INTEGER, sourceServiceId TEXT);
 	`); err != nil {
 		t.Fatalf("creating the schema: %v", err)
 	}

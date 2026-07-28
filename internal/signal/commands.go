@@ -227,7 +227,7 @@ func cmdHistory(db *sqliteDB, jsonOut bool, convArg string, limit int, before in
 	return nil
 }
 
-func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count int) error {
+func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count, before, after int) error {
 	where := "m.body LIKE '%'||?||'%' AND m.type IN ('incoming','outgoing')"
 	args := []any{query}
 	label := ""
@@ -240,7 +240,8 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count int) err
 		args = append(args, c.ID)
 		label = " in " + c.Name
 	}
-	q := fmt.Sprintf(`SELECT m.rowid, m.type, m.sent_at, m.body, %[1]s AS conv, %[2]s AS sender
+	q := fmt.Sprintf(`SELECT m.rowid, m.conversationId AS conv_id, m.type, m.sent_at,
+		m.body, m.hasAttachments, %[1]s AS conv, %[2]s AS sender
 		FROM messages m
 		JOIN conversations c ON c.id = m.conversationId
 		LEFT JOIN conversations s ON s.serviceId = m.sourceServiceId
@@ -250,20 +251,115 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count int) err
 	if err != nil {
 		return err
 	}
+
+	// With context requested, attach the surrounding messages to each hit.
+	// Both keys are always present (empty when that side is 0) so the JSON shape
+	// stays predictable for a consumer rather than flipping to null.
+	if before > 0 || after > 0 {
+		for _, m := range rows {
+			pre, post, err := contextRows(db, asStr(m["conv_id"]), asInt(m["rowid"]), before, after)
+			if err != nil {
+				return err
+			}
+			m["context_before"] = orEmpty(pre)
+			m["context_after"] = orEmpty(post)
+		}
+	}
+
 	if jsonOut {
 		printJSON(rows)
 		return nil
 	}
+
 	fmt.Printf("%d matches for %q%s:\n", len(rows), query, label)
-	for _, r := range rows {
-		sender := asStr(r["sender"])
-		if asStr(r["type"]) == "outgoing" {
-			sender = "me"
+
+	// No context: the flat, one-line-per-hit form, each line naming its own
+	// conversation since hits can span many.
+	if before == 0 && after == 0 {
+		for _, r := range rows {
+			sender := asStr(r["sender"])
+			if asStr(r["type"]) == "outgoing" {
+				sender = "me"
+			}
+			fmt.Printf("[%s] %s → %s: %s\n", fmtTime(asInt(r["sent_at"])),
+				sender, asStr(r["conv"]), truncate(oneLine(asStr(r["body"])), 90))
 		}
-		fmt.Printf("[%s] %s → %s: %s\n", fmtTime(asInt(r["sent_at"])),
-			sender, asStr(r["conv"]), truncate(oneLine(asStr(r["body"])), 90))
+		return nil
+	}
+
+	// With context: group each hit under its conversation, indent the
+	// surrounding messages, and mark the matched line with ">".
+	for _, m := range rows {
+		fmt.Printf("\n# %s\n", asStr(m["conv"]))
+		for _, r := range m["context_before"].([]map[string]any) {
+			fmt.Printf("    %s\n", sigLine(r))
+		}
+		fmt.Printf("  > %s\n", sigLine(m))
+		for _, r := range m["context_after"].([]map[string]any) {
+			fmt.Printf("    %s\n", sigLine(r))
+		}
 	}
 	return nil
+}
+
+// sigLine renders one conversation message as "[time] sender: body", the same
+// shape `signal history` prints. Used for both the matched line and its
+// surrounding context; the conversation name lives in the group header instead.
+func sigLine(r map[string]any) string {
+	sender := asStr(r["sender"])
+	switch {
+	case asStr(r["type"]) == "outgoing":
+		sender = "me"
+	case sender == "":
+		sender = "?"
+	}
+	body := oneLine(asStr(r["body"]))
+	switch {
+	case asStr(r["type"]) == "call-history":
+		body = "[call]"
+	case body == "" && asInt(r["hasAttachments"]) > 0:
+		body = "[attachment]"
+	}
+	return fmt.Sprintf("[%s] %s: %s", fmtTime(asInt(r["sent_at"])), sender, body)
+}
+
+// contextRows fetches up to `before` messages immediately preceding and up to
+// `after` immediately following the given rowid within one conversation, each
+// slice in chronological (rowid) order. rowid is Signal's insertion order, so
+// adjacent rowids are adjacent messages — the same cursor `history --before`
+// pages on. A hit near the start or end of a conversation simply gets a shorter
+// window. Overlapping windows from two nearby hits are not merged; each hit
+// prints its own, so a message can appear under more than one.
+func contextRows(db *sqliteDB, convID string, rowid int64, before, after int) (pre, post []map[string]any, err error) {
+	const sel = `SELECT m.rowid, m.type, m.sent_at, m.body, m.hasAttachments, %s AS sender
+		FROM messages m LEFT JOIN conversations s ON s.serviceId = m.sourceServiceId
+		WHERE m.conversationId=? AND m.type IN ('incoming','outgoing','call-history')
+		  AND m.rowid %s ? ORDER BY m.rowid %s LIMIT %d`
+	if before > 0 {
+		pre, err = db.query(fmt.Sprintf(sel, dispName("s"), "<", "DESC", before), convID, rowid)
+		if err != nil {
+			return nil, nil, err
+		}
+		// Fetched nearest-first (descending); flip to chronological.
+		for i, j := 0, len(pre)-1; i < j; i, j = i+1, j-1 {
+			pre[i], pre[j] = pre[j], pre[i]
+		}
+	}
+	if after > 0 {
+		post, err = db.query(fmt.Sprintf(sel, dispName("s"), ">", "ASC", after), convID, rowid)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return pre, post, nil
+}
+
+// orEmpty turns a nil row slice into an empty one so it marshals as [] not null.
+func orEmpty(rows []map[string]any) []map[string]any {
+	if rows == nil {
+		return []map[string]any{}
+	}
+	return rows
 }
 
 // windowStart is the cutoff `--hours` describes: the start of the activity
