@@ -111,19 +111,42 @@ wired up yet — Slack only.)
 
 ## Scope: what this machine lets you read
 
-The user may have declared a scope — a config file listing the workspaces,
-channels, and Signal conversations lurk may read. When one is in force, every
-command is bound by it and each run prints `N results excluded by scope` on
-stderr.
+Most machines have no scope configured and everything below is moot — lurk reads
+whatever the user is signed into, as it always has.
 
-**If a channel or conversation the user names comes back "outside the declared
-scope", or a digest looks emptier than expected, run `lurk scope`.** It prints
-which file applies and what it resolves to. Report what you find and ask the
-user whether to widen it — never work around it. `slack raw` and `signal raw`
-are refused entirely while a scope is in force, by design.
+Where a scope *is* configured, a config file lists the workspaces, channels, and
+Signal conversations lurk may read; every command is bound by it, and each run
+prints `N results excluded by scope` on stderr.
 
-Treat the excluded count as information, not noise: it's what distinguishes
-"scope hid this" from "nothing was waiting". Say which it was.
+**Treat that count as information, not noise.** It's what distinguishes "scope
+hid this" from "nothing was waiting" — say which it was rather than reporting a
+quiet day.
+
+**When something is refused, the error names the exact line that would allow
+it.** Relay that to the user and ask; don't work around it, and don't retry the
+same read another way. `slack raw` and `signal raw` are refused outright while a
+scope is in force, by design — that's not a bug to route around.
+
+`lurk scope` prints which file applies and resolves it against the live sources,
+so a channel named in the config that matches nothing simply won't be listed.
+That's the first thing to run when a digest looks emptier than expected.
+
+If the user asks you to *set up* a scope, the format is one entry per line:
+
+```
+# work only
+slack Acme Corp              # a whole workspace, by name, ID, or subdomain
+slack widgets/#eng           # just this channel
+signal Team Chat             # by conversation name, ID, or phone number
+```
+
+Save it as `~/.config/lurk/scope`, or anywhere with `$LURK_CONFIG` pointing at
+it. It's an allowlist: anything unnamed is unreadable, including a whole source
+— a Slack-only file excludes all of Signal. Use `lurk slack channels <ws>` and
+`lurk signal conversations` to get exact names first, then `lurk scope` to
+confirm the file resolves to what the user meant. For an unattended setup, also
+set `LURK_REQUIRE_SCOPE=1` so a broken path fails loudly instead of quietly
+reading everything.
 
 ## Limitations worth knowing before you report a gap
 

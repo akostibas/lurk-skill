@@ -93,6 +93,22 @@ func keepInScope(rows []map[string]any, idKey, nameKey string) []map[string]any 
 	return out
 }
 
+// outOfScope names the conversations a filter is about to drop, so an error can
+// say which one the caller probably meant.
+func outOfScope(rows []map[string]any) []string {
+	s := scope.Current()
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range rows {
+		if !s.Signal(asStr(r["id"]), asStr(r["name"]), asStr(r["e164"])) {
+			out = append(out, asStr(r["name"]))
+		}
+	}
+	return out
+}
+
 // --- conversation resolution ---
 
 type conv struct {
@@ -115,11 +131,22 @@ func resolveConv(db *sqliteDB, arg string) (*conv, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Held before filtering: naming the conversation the caller meant is what
+	// lets the error say which line would include it.
+	dropped := outOfScope(rows)
 	rows = keepInScope(rows, "id", "name")
 	switch len(rows) {
 	case 0:
-		if scope.Active() {
-			return nil, fmt.Errorf("no conversation in scope matches %q (see: lurk scope)", arg)
+		// Distinguish "no such conversation" from "it's there but excluded":
+		// the second sends a caller off diagnosing the wrong thing.
+		if len(dropped) == 1 {
+			return nil, fmt.Errorf("conversation %q is outside the declared scope — "+
+				"add a line `signal %[1]s` to %s to include it (see: lurk scope)", dropped[0], scope.Path())
+		}
+		if len(dropped) > 1 {
+			return nil, fmt.Errorf("%q matches %d conversations, all outside the declared scope (%s); "+
+				"add one to %s to include it (see: lurk scope)",
+				arg, len(dropped), strings.Join(dropped, ", "), scope.Path())
 		}
 		return nil, fmt.Errorf("no conversation matches %q", arg)
 	case 1:

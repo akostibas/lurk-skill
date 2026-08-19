@@ -17,6 +17,22 @@ import (
 	"sync/atomic"
 )
 
+// Example is the file format, printed wherever a caller needs to write or widen
+// a config. Nothing else documents the syntax at the point of use, and an agent
+// told "ask the user to widen the scope" needs to know what to propose.
+const Example = `To bound what lurk can read, write a scope file — one entry per line:
+
+    # lines starting with # are comments
+    slack Acme Corp              # a whole workspace, by name, ID, or subdomain
+    slack widgets/#eng           # just this channel
+    slack widgets/#eng-oncall
+    signal Team Chat             # by conversation name, ID, or phone number
+
+Save it as ~/.config/lurk/scope, or anywhere and point $LURK_CONFIG at it.
+Anything the file doesn't name becomes unreadable, including a whole source:
+a Slack-only file excludes all of Signal. Re-run 'lurk scope' to check it.
+`
+
 // DefaultPath is the personal default, used when $LURK_CONFIG is unset.
 func DefaultPath() string {
 	home, _ := os.UserHomeDir()
@@ -62,8 +78,8 @@ func Load() error {
 			return fmt.Errorf("LURK_CONFIG=%s: %w", path, err)
 		}
 		if required() {
-			return fmt.Errorf("LURK_REQUIRE_SCOPE is set but no scope config resolved (looked at %s); "+
-				"set LURK_CONFIG or create that file", path)
+			return fmt.Errorf("LURK_REQUIRE_SCOPE is set but no scope config resolved (looked at %s), "+
+				"so nothing was read.\n\n%s", path, Example)
 		}
 		return nil
 	}
@@ -83,6 +99,15 @@ func required() bool { return os.Getenv("LURK_REQUIRE_SCOPE") == "1" }
 func Current() *Scope { return cur }
 
 func Active() bool { return cur != nil }
+
+// Path is the config file in force, for error messages that tell a caller which
+// file to edit. Empty when unscoped.
+func Path() string {
+	if cur == nil {
+		return ""
+	}
+	return cur.Path
+}
 
 // parse reads the line format: a source word, then the rest of the line as the
 // entry. Rest-of-line means Signal conversation names with spaces need no
@@ -248,8 +273,13 @@ func Refuse(what string) error {
 // being able to see this before a run is what makes the scope checkable.
 func Describe(w io.Writer) {
 	if cur == nil {
-		fmt.Fprintf(w, "no scope in force — lurk reads everything you're signed into.\n\n")
-		fmt.Fprintf(w, "looked at: $LURK_CONFIG (unset)\n           %s (absent)\n", DefaultPath())
+		fmt.Fprint(w, "no scope in force — lurk reads everything you're signed into.\n\n")
+		env := "$LURK_CONFIG (unset)"
+		if p := os.Getenv("LURK_CONFIG"); p != "" {
+			env = "$LURK_CONFIG=" + p + " (unreadable)"
+		}
+		fmt.Fprintf(w, "looked at: %s\n           %s (absent)\n\n", env, DefaultPath())
+		fmt.Fprint(w, Example)
 		return
 	}
 	src := "default"

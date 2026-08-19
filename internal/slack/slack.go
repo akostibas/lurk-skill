@@ -528,7 +528,7 @@ func buildRegistry() ([]workspace, error) {
 		return nil, err
 	}
 	var reg []workspace
-	dropped := 0
+	outOfScope = nil
 	for _, t := range toks {
 		c := &client{token: t, cookie: cookie}
 		info, err := c.call("auth.test", nil)
@@ -547,22 +547,30 @@ func buildRegistry() ([]workspace, error) {
 		// no command can reach a workspace the config doesn't name.
 		chans, ok := scope.Current().SlackWorkspace(w.Team, w.TeamID, w.URL)
 		if !ok {
-			dropped++
+			outOfScope = append(outOfScope, w.Team)
 			continue
 		}
 		c.chans = chans
 		reg = append(reg, w)
 	}
-	scope.Exclude(dropped)
+	scope.Exclude(len(outOfScope))
+	sort.Strings(outOfScope)
 	if len(reg) == 0 {
-		if dropped > 0 {
-			return nil, fmt.Errorf("no signed-in workspace is in scope (%d excluded; see: lurk scope)", dropped)
+		if len(outOfScope) > 0 {
+			return nil, fmt.Errorf("no signed-in workspace is in scope; %s %s excluded (see: lurk scope)",
+				strings.Join(outOfScope, ", "), map[bool]string{true: "is", false: "are"}[len(outOfScope) == 1])
 		}
 		return nil, fmt.Errorf("found tokens but none authenticated — open the Slack desktop app, sign in, and retry")
 	}
 	sort.Slice(reg, func(i, j int) bool { return reg[i].Team < reg[j].Team })
 	return reg, nil
 }
+
+// outOfScope holds the workspaces buildRegistry dropped for being outside the
+// declared scope, so pick can tell "you're not signed into that" apart from
+// "scope excluded it". A package var because pick is called from a dozen places
+// and this is a single-shot CLI — one registry per process.
+var outOfScope []string
 
 func pick(reg []workspace, name string) (workspace, error) {
 	n := strings.ToLower(name)
@@ -571,11 +579,23 @@ func pick(reg []workspace, name string) (workspace, error) {
 			return w, nil
 		}
 	}
+	// Saying "no workspace matching" for one the user IS signed into would send
+	// a caller off diagnosing a sign-in problem that doesn't exist.
+	for _, t := range outOfScope {
+		if strings.Contains(strings.ToLower(t), n) {
+			return workspace{}, fmt.Errorf("workspace %q is signed in but outside the declared scope — "+
+				"add a line `slack %s` to %s to include it (see: lurk scope)", t, t, scope.Path())
+		}
+	}
 	var names []string
 	for _, w := range reg {
 		names = append(names, w.Team)
 	}
-	return workspace{}, fmt.Errorf("no workspace matching %q; available: %s", name, strings.Join(names, ", "))
+	msg := fmt.Sprintf("no workspace matching %q; available: %s", name, strings.Join(names, ", "))
+	if len(outOfScope) > 0 {
+		msg += fmt.Sprintf(" (%s excluded by scope)", strings.Join(outOfScope, ", "))
+	}
+	return workspace{}, errors.New(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -660,6 +680,16 @@ func nextCursor(r map[string]any) string {
 }
 
 var chanIDRe = regexp.MustCompile(`^[CDG][A-Z0-9]+$`)
+
+// outsideScope is the error a caller gets for naming a real channel the config
+// doesn't admit. It quotes the identifier they typed and the line that would fix
+// it — the ID alone leaves an agent to map back to what it asked for.
+func outsideScope(ident, id, name, team string) error {
+	entry := firstNonEmpty(name, id)
+	return fmt.Errorf("channel %s (%s) is outside the declared scope — "+
+		"add a line `slack %s/#%s` to %s to include it (see: lurk scope)",
+		ident, id, team, entry, scope.Path())
+}
 
 func resolveChannel(c *client, ident string) (id, name string, err error) {
 	if chanIDRe.MatchString(ident) {
@@ -787,6 +817,9 @@ func cmdHistory(w workspace, channel string, limit int, oldest, cursor string, a
 	if err != nil {
 		fail(err)
 	}
+	if !w.allows(cid, cname) {
+		fail(outsideScope(channel, cid, cname, w.Team))
+	}
 	r, err := w.c.call("conversations.history", map[string]string{
 		"channel": cid, "limit": strconv.Itoa(limit), "oldest": oldest, "cursor": cursor,
 	})
@@ -838,6 +871,9 @@ func cmdReplies(w workspace, channel, threadTS string, limit int, asJSON bool) {
 	cid, cname, err := resolveChannel(w.c, channel)
 	if err != nil {
 		fail(err)
+	}
+	if !w.allows(cid, cname) {
+		fail(outsideScope(channel, cid, cname, w.Team))
 	}
 	r, err := w.c.call("conversations.replies", map[string]string{
 		"channel": cid, "ts": threadTS, "limit": strconv.Itoa(limit),
