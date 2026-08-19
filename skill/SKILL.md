@@ -99,8 +99,10 @@ durable form to keep across sessions. Prefer the code over transcribing a
 16-digit id — it's the same thread with far less to get wrong.
 
 **Getting the actual image/file behind a message** → `lurk slack file <ws>
-<fileID>`. Text commands surface only a message's words, so a screenshot-only
-report reads as empty. `--json slack history`/`replies` expose each attachment's
+<fileID>`. Text output marks non-text content with `[image]`, `[file]`, or
+`[attachment]` lines under the message, carrying the alt text and URL — enough to
+know something is there and often enough to read it, but a chart still needs
+fetching before you can describe it. `--json slack history`/`replies` expose each attachment's
 `id` (and `url_private`); pass either to `slack file` to download the bytes (an
 authenticated read-only GET, restricted to Slack's file hosts). Without `--out`
 it saves to the temp dir under the file's own name and prints the path, which you
