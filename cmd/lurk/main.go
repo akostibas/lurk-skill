@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/akostibas/lurk-skill/internal/digest"
+	"github.com/akostibas/lurk-skill/internal/scope"
 	"github.com/akostibas/lurk-skill/internal/signal"
 	"github.com/akostibas/lurk-skill/internal/slack"
 )
@@ -25,12 +26,23 @@ usage:
                               catch-up digest across every source
   lurk slack  <command> […]   Slack workspaces (see: lurk slack)
   lurk signal <command> […]   Signal Desktop  (see: lurk signal)
+  lurk scope                  what this run may read, and how to declare it
 
   --json      emit raw JSON instead of formatted text (before the command)
   --version   print the build version
 
 --hours bounds recent activity. Anything still unread is listed however old it
 is, marked "outside the window" when it predates one.
+
+Scope: if a config file declares which workspaces, channels, and Signal
+conversations lurk may read, every command is bound by it — flags can narrow it
+further, never widen it. The file is $LURK_CONFIG if set, else
+~/.config/lurk/scope; with neither, lurk reads everything you're signed into.
+Set LURK_REQUIRE_SCOPE=1 to make an unresolvable config fatal instead.
+
+Run 'lurk scope' to see the file format and what your config resolves to. It
+prints a worked example when no config is in force, so it's the place to start
+whether you're declaring a scope or checking one.
 
 lurk only ever reads. There is no code path that posts, replies, reacts,
 joins, or marks anything read.
@@ -45,10 +57,18 @@ func main() {
 		os.Exit(2)
 	}
 
+	// Scope is resolved before any command runs, so no read path can start
+	// before the floor is known.
+	if err := scope.Load(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 	var err error
 	switch args[0] {
 	case "summary":
 		err = cmdSummary(args[1:], asJSON)
+	case "scope":
+		err = cmdScope()
 	case "slack":
 		err = slack.Run(args[1:], asJSON)
 	case "signal":
@@ -62,10 +82,34 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
+	// Always report exclusions, including on the error path: "skipped" has to
+	// stay distinguishable from "nothing waiting".
+	scope.Report(os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
+}
+
+// cmdScope shows which config applies and what it resolves to, checked against
+// the live sources so a name that matches nothing is visible before a run.
+func cmdScope() error {
+	scope.Describe(os.Stdout)
+	if !scope.Active() {
+		return nil
+	}
+	fmt.Println("\nresolved against what you're signed into:")
+	var failures []string
+	if err := slack.ScopeList(os.Stdout); err != nil {
+		failures = append(failures, "slack: "+err.Error())
+	}
+	if err := signal.ScopeList(os.Stdout); err != nil {
+		failures = append(failures, "signal: "+err.Error())
+	}
+	for _, f := range failures {
+		fmt.Fprintln(os.Stderr, "could not resolve "+f)
+	}
+	return nil
 }
 
 // cmdSummary is the headline command: one catch-up digest spanning every source.
