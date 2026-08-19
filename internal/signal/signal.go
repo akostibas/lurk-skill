@@ -181,7 +181,11 @@ when their last activity predates it.
 search can show the messages around each hit, grep-style: -C/--context n lines
 on each side, or -A/--after-context and -B/--before-context to set the sides
 independently. With context, hits are grouped by conversation and the matched
-line is marked ">".`
+line is marked ">".
+
+A declared scope, if one is in force, bounds every command here — conversations
+it doesn't name are unreadable, and 'raw' is refused outright. Run 'lurk scope'
+for what applies and how to declare it.`
 
 // popFlag removes "--name value" (or "--name" for bools) from args, returning
 // the value ("" if absent) and the remaining args. Thin wrapper over popFlags

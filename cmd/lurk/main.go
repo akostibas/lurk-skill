@@ -26,7 +26,7 @@ usage:
                               catch-up digest across every source
   lurk slack  <command> […]   Slack workspaces (see: lurk slack)
   lurk signal <command> […]   Signal Desktop  (see: lurk signal)
-  lurk scope                  show what this run is allowed to read
+  lurk scope                  what this run may read, and how to declare it
 
   --json      emit raw JSON instead of formatted text (before the command)
   --version   print the build version
@@ -39,6 +39,10 @@ conversations lurk may read, every command is bound by it — flags can narrow i
 further, never widen it. The file is $LURK_CONFIG if set, else
 ~/.config/lurk/scope; with neither, lurk reads everything you're signed into.
 Set LURK_REQUIRE_SCOPE=1 to make an unresolvable config fatal instead.
+
+Run 'lurk scope' to see the file format and what your config resolves to. It
+prints a worked example when no config is in force, so it's the place to start
+whether you're declaring a scope or checking one.
 
 lurk only ever reads. There is no code path that posts, replies, reacts,
 joins, or marks anything read.

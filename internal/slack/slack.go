@@ -1656,6 +1656,10 @@ for the session; a full permalink works too (and across sessions).
 message JSON, or a url_private/url_private_download URL. Without --out it writes
 to the temp dir under the file's own name and prints the path; --out - streams
 the bytes to stdout.
+
+A declared scope, if one is in force, bounds every command here — workspaces and
+channels it doesn't name are unreadable, and 'raw' is refused outright. Run
+'lurk scope' for what applies and how to declare it.
 `
 
 // Run executes one `lurk slack …` subcommand.
