@@ -3,11 +3,13 @@ package signal
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/akostibas/lurk-skill/internal/digest"
+	"github.com/akostibas/lurk-skill/internal/scope"
 )
 
 // dispName is a SQL expression yielding a human display name for a conversation
@@ -71,6 +73,26 @@ func printJSON(v any) {
 	enc.Encode(v)
 }
 
+// --- scope ---
+
+// keepInScope drops rows whose conversation isn't in the declared scope and
+// records how many went, so a filtered list stays distinguishable from a quiet
+// one. Row shapes differ between queries, hence the key names.
+func keepInScope(rows []map[string]any, idKey, nameKey string) []map[string]any {
+	s := scope.Current()
+	if s == nil {
+		return rows
+	}
+	out := rows[:0:0]
+	for _, r := range rows {
+		if s.Signal(asStr(r[idKey]), asStr(r[nameKey]), asStr(r["e164"])) {
+			out = append(out, r)
+		}
+	}
+	scope.Exclude(len(rows) - len(out))
+	return out
+}
+
 // --- conversation resolution ---
 
 type conv struct {
@@ -78,10 +100,11 @@ type conv struct {
 }
 
 func resolveConv(db *sqliteDB, arg string) (*conv, error) {
-	// Exact conversation id.
+	// Exact conversation id. Scope-checked like any other match: naming a
+	// conversation by id must not reach further than naming it by name.
 	if rows, _ := db.query(
 		fmt.Sprintf("SELECT id, type, %s AS name, e164 FROM conversations c WHERE id=?", dispName("c")),
-		arg); len(rows) == 1 {
+		arg); len(keepInScope(rows, "id", "name")) == 1 {
 		return rowConv(rows[0]), nil
 	}
 	// Substring match on display name or phone, most-recent first.
@@ -92,8 +115,12 @@ func resolveConv(db *sqliteDB, arg string) (*conv, error) {
 	if err != nil {
 		return nil, err
 	}
+	rows = keepInScope(rows, "id", "name")
 	switch len(rows) {
 	case 0:
+		if scope.Active() {
+			return nil, fmt.Errorf("no conversation in scope matches %q (see: lurk scope)", arg)
+		}
 		return nil, fmt.Errorf("no conversation matches %q", arg)
 	case 1:
 		return rowConv(rows[0]), nil
@@ -150,6 +177,7 @@ func cmdConversations(db *sqliteDB, jsonOut bool, filter, kind string, limit int
 	if err != nil {
 		return err
 	}
+	rows = keepInScope(rows, "id", "name")
 	if jsonOut {
 		printJSON(rows)
 		return nil
@@ -251,6 +279,7 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count, before,
 	if err != nil {
 		return err
 	}
+	rows = keepInScope(rows, "conv_id", "conv")
 
 	// With context requested, attach the surrounding messages to each hit.
 	// Both keys are always present (empty when that side is 0) so the JSON shape
@@ -391,6 +420,8 @@ func summaryRows(db *sqliteDB, hours int) (unread, recent []map[string]any, err 
 	if err != nil {
 		return nil, nil, err
 	}
+	// Bucket first, then scope-filter, so the excluded count reports what would
+	// have been in the digest rather than every conversation in the store.
 	for _, r := range rows {
 		if asInt(r["unread"]) > 0 || asInt(r["markedUnread"]) == 1 {
 			unread = append(unread, r)
@@ -398,6 +429,7 @@ func summaryRows(db *sqliteDB, hours int) (unread, recent []map[string]any, err 
 			recent = append(recent, r)
 		}
 	}
+	unread, recent = keepInScope(unread, "id", "name"), keepInScope(recent, "id", "name")
 	return unread, recent, nil
 }
 
@@ -502,6 +534,11 @@ func cmdWhoami(db *sqliteDB, jsonOut bool) error {
 }
 
 func cmdRaw(db *sqliteDB, query string) error {
+	// An arbitrary SELECT can't be bound to a conversation list without parsing
+	// SQL, so under a scope it's refused rather than left as a silent hole.
+	if err := scope.Refuse("signal raw"); err != nil {
+		return err
+	}
 	t := strings.ToUpper(strings.TrimSpace(query))
 	if !(strings.HasPrefix(t, "SELECT") || strings.HasPrefix(t, "WITH") ||
 		strings.HasPrefix(t, "PRAGMA") || strings.HasPrefix(t, "EXPLAIN")) {
@@ -512,6 +549,33 @@ func cmdRaw(db *sqliteDB, query string) error {
 		return err
 	}
 	printJSON(rows)
+	return nil
+}
+
+// ScopeList prints the conversations the scope admits, resolved against the
+// local store — the check that catches a name in the config matching nothing.
+func ScopeList(out io.Writer) error {
+	db, cleanup, err := openSignalDB()
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	q := fmt.Sprintf(`SELECT c.id, c.type, %[1]s AS name, c.e164 FROM conversations c
+		WHERE c.active_at IS NOT NULL ORDER BY %[1]s`, dispName("c"))
+	rows, err := db.query(q)
+	if err != nil {
+		return err
+	}
+	s := scope.Current()
+	if s == nil {
+		fmt.Fprintf(out, "signal — every conversation (%d)\n", len(rows))
+		return nil
+	}
+	for _, r := range rows {
+		if s.Signal(asStr(r["id"]), asStr(r["name"]), asStr(r["e164"])) {
+			fmt.Fprintf(out, "signal %s (%s)\n", asStr(r["name"]), asStr(r["type"]))
+		}
+	}
 	return nil
 }
 

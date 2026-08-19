@@ -29,6 +29,11 @@ Three commitments:
 3. **Ranked by who it's aimed at.** A digest is not a feed. Mentions of you beat
    unread DMs, which beat threads you're in, which beat ambient channel noise.
    Ordering *is* the product; without it you've rebuilt the unread badge.
+4. **How much it can read is declared, not remembered.** A run's reach is a
+   property of the tool, not of whoever invoked it. Where a config declares what
+   may be read, every command is bound by it — flags narrow it, nothing widens
+   it. Without that, an unattended agent's safety is a hope; with it, you can
+   read a file and know. See [ADR-0001](adr/0001-declared-scope.md).
 
 ## Non-goals
 
@@ -55,6 +60,11 @@ Three commitments:
   digest, never fails it — and the user can tell "skipped" from "quiet".
 - A stale or rotated session heals itself on the next run without the user
   learning anything about tokens.
+- Two contexts on one machine — a person at a shell, an unattended agent working
+  one engagement — hold different scopes, neither aware of the other, with
+  nothing to pass per-invocation.
+- Someone can answer "what will this run read?" by reading one file, or by
+  running `lurk scope`, without running the command itself.
 - Adding a fourth source means writing one `Digest()` function, not touching the
   other sources or the renderer.
 
@@ -70,6 +80,12 @@ Three commitments:
   think about tokens at all.
 - Per-source flags have leaked into the cross-source command, so `lurk summary`
   needs source-specific knowledge to use.
+- A read path exists that a declared scope doesn't bind, so what a run reads
+  depends on which command the caller reached for.
+- The effective scope is something you compute (merged files, layered defaults)
+  rather than something you read.
+- A conversation is dropped by scope without the run saying so, making an
+  excluded digest look like a quiet one.
 
 ## Where it could go
 

@@ -52,6 +52,8 @@ lurk signal search  <query> [--conv c] [--count n] [-C n | -A n -B n]
 lurk signal summary [--hours n]
 lurk signal whoami
 lurk signal raw     <SELECT ...>
+
+lurk scope
 ```
 
 - `--json` (anywhere in the command) emits raw JSON instead of formatted text.
@@ -106,6 +108,22 @@ authenticated read-only GET, restricted to Slack's file hosts). Without `--out`
 it saves to the temp dir under the file's own name and prints the path, which you
 can then read/view; `--out -` streams to stdout. (Signal attachments aren't
 wired up yet — Slack only.)
+
+## Scope: what this machine lets you read
+
+The user may have declared a scope — a config file listing the workspaces,
+channels, and Signal conversations lurk may read. When one is in force, every
+command is bound by it and each run prints `N results excluded by scope` on
+stderr.
+
+**If a channel or conversation the user names comes back "outside the declared
+scope", or a digest looks emptier than expected, run `lurk scope`.** It prints
+which file applies and what it resolves to. Report what you find and ask the
+user whether to widen it — never work around it. `slack raw` and `signal raw`
+are refused entirely while a scope is in force, by design.
+
+Treat the excluded count as information, not noise: it's what distinguishes
+"scope hid this" from "nothing was waiting". Say which it was.
 
 ## Limitations worth knowing before you report a gap
 

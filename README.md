@@ -58,6 +58,7 @@ lurk slack   <command> […]     # workspaces, summary, mentions, channels,
                                # history, replies, search, file, raw
 lurk signal  <command> […]     # conversations, history, search, summary,
                                # whoami, raw
+lurk scope                     # what this run is allowed to read
 ```
 
 Run `lurk slack` or `lurk signal` with no arguments for that source's full
@@ -72,6 +73,39 @@ signed-out app doesn't cost you the rest of the digest.
 **`lurk slack mentions <ws>`** answers a question the digests can't: for each
 recent mention it expands the whole thread and flags whether *you already
 replied*, sorting unanswered mentions to the top.
+
+## Limiting what a run can read
+
+By default lurk reads every workspace and conversation you're signed into. To
+bound it — most usefully for an unattended agent — declare a scope:
+
+```
+# ~/.config/lurk/scope   (or point $LURK_CONFIG anywhere)
+slack Acme Corp              # the whole workspace
+slack widgets/#eng           # just this channel
+slack widgets/#eng-oncall
+signal Team Chat             # by conversation name, id, or phone number
+```
+
+Every command is bound by it — flags can narrow further, never widen — and each
+run reports on stderr how many results it excluded, so a filtered digest doesn't
+look like a quiet one. Anything the file doesn't name is unreadable, including a
+whole source: a Slack-only file excludes all of Signal.
+
+`lurk scope` prints which file applies and resolves it against what you're
+actually signed into, so a typo shows up as a channel that simply isn't there.
+
+Exactly one file applies, no merging: `$LURK_CONFIG` if set, else
+`~/.config/lurk/scope`, else nothing. Two contexts on one machine (you at a
+shell, an agent on a schedule) get two files and neither knows about the other.
+
+Set `LURK_REQUIRE_SCOPE=1` and lurk refuses to run unscoped — a typo'd
+`LURK_CONFIG` becomes a loud failure instead of a digest that quietly includes
+everything. Unattended callers should set both.
+
+`slack raw` and `signal raw` take unbounded targets, so they're refused while a
+scope is in force. Run them without `LURK_CONFIG` set if you mean to reach past
+it. Rationale in [ADR-0001](docs/adr/0001-declared-scope.md).
 
 ## Two things to know
 

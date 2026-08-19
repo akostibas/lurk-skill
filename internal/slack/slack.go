@@ -45,6 +45,7 @@ import (
 
 	"github.com/akostibas/lurk-skill/internal/digest"
 	"github.com/akostibas/lurk-skill/internal/macos"
+	"github.com/akostibas/lurk-skill/internal/scope"
 )
 
 // slackSupport is a function rather than a package var so it tracks HOME at
@@ -335,11 +336,32 @@ func cookieHeader() (string, error) {
 type client struct {
 	token  string
 	cookie string
+
+	// scope, set once by buildRegistry. chans is the declared channel set for
+	// this workspace (nil = every channel); allowed is that set resolved to
+	// channel IDs, built lazily on the first content call.
+	chans   map[string]bool
+	allowed map[string]bool
+	once    sync.Once
+}
+
+// contentMethods return message bodies. They're the ones scope binds: everything
+// else in readMethods returns metadata (names, counts, membership) that a caller
+// already sees in `slack channels`, and gating them would make resolving a
+// channel's name impossible without recursing through this check.
+var contentMethods = map[string]bool{
+	"conversations.history": true,
+	"conversations.replies": true,
 }
 
 func (c *client) call(method string, params map[string]string) (map[string]any, error) {
 	if !readMethods[method] {
 		return nil, fmt.Errorf("refusing to call non-read method %q; this tool is read-only", method)
+	}
+	if c.chans != nil && contentMethods[method] {
+		if ch := params["channel"]; ch != "" && !c.channelAllowed(ch) {
+			return nil, fmt.Errorf("channel %s is outside the declared scope (see: lurk scope)", ch)
+		}
 	}
 	form := url.Values{}
 	for k, v := range params {
@@ -381,6 +403,37 @@ func (c *client) call(method string, params map[string]string) (map[string]any, 
 		return out, nil
 	}
 	return nil, fmt.Errorf("%s: rate-limited after retries", method)
+}
+
+// channelAllowed answers the gate above for one channel ID. The config names
+// channels the way a person does (#eng), so the first content call resolves the
+// whole workspace's channel list once and keeps the ID set.
+func (c *client) channelAllowed(id string) bool {
+	if scope.SlackChannel(c.chans, id, "") {
+		return true
+	}
+	c.once.Do(func() {
+		c.allowed = map[string]bool{}
+		cursor := ""
+		for {
+			r, err := c.call("conversations.list", map[string]string{
+				"types": "public_channel,private_channel,mpim,im", "limit": "1000", "cursor": cursor,
+			})
+			if err != nil {
+				return
+			}
+			for _, chv := range asList(r["channels"]) {
+				ch, _ := chv.(map[string]any)
+				if cid := str(ch["id"]); scope.SlackChannel(c.chans, cid, str(ch["name"])) {
+					c.allowed[cid] = true
+				}
+			}
+			if cursor = nextCursor(r); cursor == "" {
+				return
+			}
+		}
+	})
+	return c.allowed[id]
 }
 
 // download fetches a Slack file's raw bytes over HTTPS using the session's
@@ -443,6 +496,12 @@ type workspace struct {
 	c                               *client
 }
 
+// allows reports whether one of this workspace's channels is inside the
+// declared scope. Either its id or its name may be what the config names.
+func (w workspace) allows(id, name string) bool {
+	return scope.SlackChannel(w.c.chans, id, name)
+}
+
 // checkInstalled reports a missing Slack desktop app in those terms, rather
 // than letting the absence surface several layers down as a sqlite3 or
 // Keychain failure the user can't act on.
@@ -469,22 +528,36 @@ func buildRegistry() ([]workspace, error) {
 		return nil, err
 	}
 	var reg []workspace
+	dropped := 0
 	for _, t := range toks {
 		c := &client{token: t, cookie: cookie}
 		info, err := c.call("auth.test", nil)
 		if err != nil {
 			continue // stale/invalid token
 		}
-		reg = append(reg, workspace{
+		w := workspace{
 			Team:   str(info["team"]),
 			TeamID: str(info["team_id"]),
 			URL:    str(info["url"]),
 			User:   str(info["user"]),
 			UserID: str(info["user_id"]),
 			c:      c,
-		})
+		}
+		// Workspaces are gated here, at the one place the registry is built, so
+		// no command can reach a workspace the config doesn't name.
+		chans, ok := scope.Current().SlackWorkspace(w.Team, w.TeamID, w.URL)
+		if !ok {
+			dropped++
+			continue
+		}
+		c.chans = chans
+		reg = append(reg, w)
 	}
+	scope.Exclude(dropped)
 	if len(reg) == 0 {
+		if dropped > 0 {
+			return nil, fmt.Errorf("no signed-in workspace is in scope (%d excluded; see: lurk scope)", dropped)
+		}
 		return nil, fmt.Errorf("found tokens but none authenticated — open the Slack desktop app, sign in, and retry")
 	}
 	sort.Slice(reg, func(i, j int) bool { return reg[i].Team < reg[j].Team })
@@ -683,6 +756,10 @@ func cmdChannels(w workspace, types, filter string, asJSON bool) {
 		if f != "" && !strings.Contains(strings.ToLower(name), f) {
 			continue
 		}
+		if !w.allows(str(ch["id"]), str(ch["name"])) {
+			scope.Exclude(1)
+			continue
+		}
 		priv, _ := ch["is_private"].(bool)
 		mem, _ := ch["is_member"].(bool)
 		rows = append(rows, row{str(ch["id"]), name, priv, mem})
@@ -793,13 +870,24 @@ func cmdReplies(w workspace, channel, threadTS string, limit int, asJSON bool) {
 func cmdFile(w workspace, ref, out string, asJSON bool) {
 	fileURL := ref
 	var name, mimetype string
+	refIsURL := strings.HasPrefix(ref, "https://") || strings.HasPrefix(ref, "http://")
+	if refIsURL && w.c.chans != nil {
+		// A url_private carries no channel, so there's nothing to check it
+		// against. Under a scope, go via the file ID instead.
+		fail(fmt.Errorf("a scope is in force, so `slack file` needs a file ID (not a URL) to check it against (see: lurk scope)"))
+	}
 	// A bare (non-URL) ref is a file ID — resolve it to a download URL.
-	if !strings.HasPrefix(ref, "https://") && !strings.HasPrefix(ref, "http://") {
+	if !refIsURL {
 		info, err := w.c.call("files.info", map[string]string{"file": ref})
 		if err != nil {
 			fail(err)
 		}
 		f, _ := info["file"].(map[string]any)
+		// A file ID names no channel, so bind it to the channels the file was
+		// shared in — otherwise `slack file` reaches past the scope by ID.
+		if !fileInScope(w, f) {
+			fail(fmt.Errorf("file %q isn't shared in any channel in scope (see: lurk scope)", ref))
+		}
 		fileURL = firstNonEmpty(str(f["url_private_download"]), str(f["url_private"]))
 		name = str(f["name"])
 		mimetype = str(f["mimetype"])
@@ -857,7 +945,7 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 		fail(err)
 	}
 	mm, _ := r["messages"].(map[string]any)
-	matches := asList(mm["matches"])
+	matches := scopeMatches(w, asList(mm["matches"]))
 	// Attach a session thread code to every match up front, so it lands in both
 	// the JSON (`lurk_code`) and the text rendering below.
 	for _, mv := range matches {
@@ -875,8 +963,9 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 		printJSON(matches)
 		return
 	}
-	total := 0
-	if t, ok := mm["total"].(float64); ok {
+	// Slack's own total counts channels a scope may have just filtered out.
+	total := len(matches)
+	if t, ok := mm["total"].(float64); ok && w.c.chans == nil {
 		total = int(t)
 	}
 	fmt.Printf("# %d matches for: %s  (open a thread with: lurk slack replies <code>)\n\n", total, query)
@@ -889,6 +978,41 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 			fmt.Printf("    %s%s\n", tag, pl)
 		}
 	}
+}
+
+// fileInScope reports whether a files.info result was shared into any channel
+// the scope admits.
+func fileInScope(w workspace, f map[string]any) bool {
+	if w.c.chans == nil {
+		return true
+	}
+	for _, key := range []string{"channels", "groups", "ips"} {
+		for _, cv := range asList(f[key]) {
+			if w.allows(str(cv), "") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// scopeMatches drops search results from channels outside the declared scope.
+// Search is the one read path where Slack picks the channels, not the caller,
+// so it has to be filtered on the way out rather than gated on the way in.
+func scopeMatches(w workspace, matches []any) []any {
+	if w.c.chans == nil {
+		return matches
+	}
+	out := matches[:0:0]
+	for _, mv := range matches {
+		m, _ := mv.(map[string]any)
+		ch, _ := m["channel"].(map[string]any)
+		if w.allows(str(ch["id"]), str(ch["name"])) {
+			out = append(out, mv)
+		}
+	}
+	scope.Exclude(len(matches) - len(out))
+	return out
 }
 
 // codeTag renders the "[n] " prefix for a thread code pulled from a result map,
@@ -1019,7 +1143,7 @@ func summaryItems(w workspace, mentionHours, threadHours int) []digest.Item {
 	var mentions []map[string]any
 	if r, err := c.call("search.messages", map[string]string{"query": q, "count": "100", "sort": "timestamp"}); err == nil {
 		mm, _ := r["messages"].(map[string]any)
-		for _, mv := range asList(mm["matches"]) {
+		for _, mv := range scopeMatches(w, asList(mm["matches"])) {
 			m, _ := mv.(map[string]any)
 			if str(m["user"]) == w.UserID || tsTime(str(m["ts"])).Before(mentionCut) {
 				continue
@@ -1050,6 +1174,10 @@ func summaryItems(w workspace, mentionHours, threadHours int) []digest.Item {
 			continue
 		}
 		id := str(im["id"])
+		if !w.allows(id, "") {
+			scope.Exclude(1)
+			continue
+		}
 		snip := ""
 		if h, err := c.call("conversations.history", map[string]string{"channel": id, "limit": "1"}); err == nil {
 			if hs := asList(h["messages"]); len(hs) > 0 {
@@ -1069,6 +1197,10 @@ func summaryItems(w workspace, mentionHours, threadHours int) []digest.Item {
 				continue
 			}
 			if sub, _ := root["subscribed"].(bool); !sub {
+				continue
+			}
+			if !w.allows(str(root["channel"]), "") {
+				scope.Exclude(1)
 				continue
 			}
 			latest := firstNonEmpty(str(root["latest_reply"]), str(root["ts"]))
@@ -1110,6 +1242,10 @@ func summaryItems(w workspace, mentionHours, threadHours int) []digest.Item {
 				mc = int(v)
 			}
 			if !hu && mc == 0 {
+				continue
+			}
+			if !w.allows(str(ch["id"]), "") {
+				scope.Exclude(1)
 				continue
 			}
 			ucs = append(ucs, uc{res.channel(str(ch["id"])), mc, str(ch["latest"])})
@@ -1205,7 +1341,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 	mm, _ := r["messages"].(map[string]any)
 	var mentions []map[string]any
-	for _, mv := range asList(mm["matches"]) {
+	for _, mv := range scopeMatches(w, asList(mm["matches"])) {
 		m, _ := mv.(map[string]any)
 		// Skip the member's own messages and anything older than the window.
 		if str(m["user"]) == memberID || tsTime(str(m["ts"])).Before(cut) {
@@ -1417,6 +1553,45 @@ func plural(n int) string {
 	return "ies"
 }
 
+// ScopeList prints what the scope actually admits, resolved against the live
+// workspaces. This is the check that catches a typo: a channel named in the
+// config that matches nothing here simply won't appear.
+func ScopeList(out io.Writer) error {
+	reg, err := buildRegistry()
+	if err != nil {
+		return err
+	}
+	for _, w := range reg {
+		if w.c.chans == nil {
+			fmt.Fprintf(out, "slack  %s — every channel\n", w.Team)
+			continue
+		}
+		var names []string
+		cursor := ""
+		for {
+			r, err := w.c.call("conversations.list", map[string]string{
+				"types": "public_channel,private_channel,mpim,im", "limit": "1000", "cursor": cursor,
+			})
+			if err != nil {
+				return err
+			}
+			for _, chv := range asList(r["channels"]) {
+				ch, _ := chv.(map[string]any)
+				id, nm := str(ch["id"]), str(ch["name"])
+				if w.allows(id, nm) {
+					names = append(names, fmt.Sprintf("#%s (%s)", firstNonEmpty(nm, id), id))
+				}
+			}
+			if cursor = nextCursor(r); cursor == "" {
+				break
+			}
+		}
+		sort.Strings(names)
+		fmt.Fprintf(out, "slack  %s — %s\n", w.Team, strings.Join(names, ", "))
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // command dispatch
 // ---------------------------------------------------------------------------
@@ -1564,6 +1739,11 @@ func Run(args []string, asJSON bool) error {
 
 	case "raw":
 		// raw read-only passthrough: slack-read raw <workspace> <method> [k=v ...]
+		// The method allowlist bounds *what* it calls, never *which* channel, so
+		// under a scope it's refused rather than left as a silent hole.
+		if err := scope.Refuse("slack raw"); err != nil {
+			return err
+		}
 		if len(args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: raw <workspace> <method> [k=v ...]")
 			os.Exit(2)
