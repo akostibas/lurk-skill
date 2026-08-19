@@ -744,6 +744,7 @@ func cmdHistory(w workspace, channel string, limit int, oldest, cursor string, a
 			who = firstNonEmpty(str(m["username"]), str(m["bot_id"]), "?")
 		}
 		fmt.Printf("[%s] %s: %s\n", fmtTS(str(m["ts"])), who, renderText(str(m["text"]), names))
+		printMedia(m, w.Team, "    ")
 		if rc, ok := m["reply_count"].(float64); ok && rc > 0 {
 			if code, ok := m["lurk_code"].(int); ok && code > 0 {
 				fmt.Printf("    ↳ %d replies — reopen with: lurk slack replies %d\n", int(rc), code)
@@ -782,6 +783,7 @@ func cmdReplies(w workspace, channel, threadTS string, limit int, asJSON bool) {
 			who = firstNonEmpty(str(m["username"]), "?")
 		}
 		fmt.Printf("[%s] %s: %s\n", fmtTS(str(m["ts"])), who, renderText(str(m["text"]), names))
+		printMedia(m, w.Team, "    ")
 	}
 }
 
@@ -885,6 +887,7 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 		ch, _ := m["channel"].(map[string]any)
 		who := firstNonEmpty(str(m["username"]), str(m["user"]), "?")
 		fmt.Printf("[%s] #%s %s: %s\n", fmtTS(str(m["ts"])), str(ch["name"]), who, str(m["text"]))
+		printMedia(m, w.Team, "    ")
 		if tag, pl := codeTag(m["lurk_code"]), str(m["permalink"]); tag != "" || pl != "" {
 			fmt.Printf("    %s%s\n", tag, pl)
 		}
