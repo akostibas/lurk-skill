@@ -2,6 +2,7 @@ package slack
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -59,6 +60,16 @@ func mediaLines(m map[string]any, ws string) []string {
 	return out
 }
 
+var mrkdwnLinkRe = regexp.MustCompile(`<[^>]*>|:[a-z0-9_+' -]+:`)
+
+// isLinkChrome reports text that is nothing but links and emoji — the
+// "⚠️ Incident 🌐 Monitor 💬 Comment" button rows bots append to every card.
+// They repeat verbatim on every message and say nothing a reader can use, so
+// they're dropped. Image URLs live on image blocks, not here, and are untouched.
+func isLinkChrome(s string) bool {
+	return strings.TrimSpace(mrkdwnLinkRe.ReplaceAllString(s, "")) == ""
+}
+
 // blockText pulls the human-readable text out of a Block Kit tree — section and
 // context blocks only, so button labels and confirm dialogs stay out.
 func blockText(v any) string {
@@ -72,7 +83,9 @@ func blockText(v any) string {
 		case "context":
 			for _, ev := range asList(b["elements"]) {
 				e, _ := ev.(map[string]any)
-				parts = append(parts, str(e["text"]))
+				if t := str(e["text"]); !isLinkChrome(t) {
+					parts = append(parts, t)
+				}
 			}
 		}
 	})

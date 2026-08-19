@@ -19,6 +19,10 @@ func TestMediaLines(t *testing.T) {
 	    {"title": "Docs page", "title_link": "https://example.com/doc"},
 	    {"fallback": "[no preview available]", "blocks": [
 	      {"type": "section", "text": {"type": "mrkdwn", "text": "*Cause:* Status 502"}},
+	      {"type": "context", "elements": [
+	        {"type": "mrkdwn", "text": ":warning: <https://uptime.example.com/incidents/1|Incident>"},
+	        {"type": "mrkdwn", "text": ":globe_with_meridians: <https://uptime.example.com/monitors/1|Monitor>"}
+	      ]},
 	      {"type": "actions", "elements": [{"type": "button", "text": {"text": "Acknowledge"}}]}
 	    ]}
 	  ]
