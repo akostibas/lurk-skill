@@ -107,6 +107,11 @@ everything. Unattended callers should set both.
 scope is in force. Run them without `LURK_CONFIG` set if you mean to reach past
 it. Rationale in [ADR-0001](docs/adr/0001-declared-scope.md).
 
+Looking people up survives a scope: `lurk slack users <ws>` lists the whole
+workspace directory, and `lurk --json slack workspaces` reports your own member
+ID as `user_id`. A directory isn't channel content, so neither is scope-filtered
+— otherwise a `<@U123>` from someone outside your channels would stay a raw ID.
+
 ## Two things to know
 
 1. **Desktop sessions only.** Slack shows the workspaces signed into the desktop
