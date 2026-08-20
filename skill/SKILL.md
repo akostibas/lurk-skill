@@ -38,6 +38,7 @@ lurk summary [--hours 24] [--workspace s] [--no-slack] [--no-signal]
 lurk slack workspaces
 lurk slack summary  <ws> [--mentions-hours 24] [--threads-hours 8]
 lurk slack mentions <ws> [--user U…] [--hours 48] [--count 50]
+lurk slack users    <ws> [--filter s]
 lurk slack channels <ws> [--filter s] [--types t]
 lurk slack history  <ws> <#channel|ID> [--limit n] [--oldest ts] [--cursor c]
 lurk slack replies  <code|permalink> [--limit n]
@@ -129,6 +130,12 @@ it.** Relay that to the user and ask; don't work around it, and don't retry the
 same read another way. `slack raw` and `signal raw` are refused outright while a
 scope is in force, by design — that's not a bug to route around.
 
+Looking up who someone is stays available under a scope: `lurk slack users <ws>`
+lists the whole workspace directory (id, display name, real name, and which one
+is you), and `lurk --json slack workspaces` carries your own member ID as
+`user_id`. Use those to turn a `<@U123>` into a name, or to tell the user's own
+messages apart from everyone else's — not `slack raw`.
+
 `lurk scope` prints which file applies and resolves it against the live sources,
 so a channel named in the config that matches nothing simply won't be listed.
 That's the first thing to run when a digest looks emptier than expected.
@@ -146,9 +153,10 @@ Save it as `~/.config/lurk/scope`, or anywhere with `$LURK_CONFIG` pointing at
 it. It's an allowlist: anything unnamed is unreadable, including a whole source
 — a Slack-only file excludes all of Signal. Use `lurk slack channels <ws>` and
 `lurk signal conversations` to get exact names first, then `lurk scope` to
-confirm the file resolves to what the user meant. For an unattended setup, also
-set `LURK_REQUIRE_SCOPE=1` so a broken path fails loudly instead of quietly
-reading everything.
+confirm the file resolves to what the user meant. A `$LURK_CONFIG` pointing at a
+missing file always fails loudly; for an unattended setup also set
+`LURK_REQUIRE_SCOPE=1`, so running with *no* config fails too rather than
+quietly reading everything.
 
 ## Limitations worth knowing before you report a gap
 

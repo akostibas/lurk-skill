@@ -624,34 +624,51 @@ func fmtTS(ts string) string {
 	return time.Unix(n, 0).Format(tsLayout)
 }
 
-func userMap(c *client) map[string]string {
-	names := map[string]string{}
+// user is one entry of the workspace directory. Name follows Slack's own
+// fallback order — display_name is empty on plenty of accounts, and a blank
+// label is as unreadable as the raw ID.
+type user struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	RealName string `json:"real_name,omitempty"`
+}
+
+// listUsers walks the whole workspace directory. It is deliberately *not*
+// scope-filtered: a <@U123> in an in-scope message can name anyone, including
+// people who never posted, so filtering to in-scope membership would leave
+// exactly the unidentifiable IDs unresolved. A directory isn't channel content.
+func listUsers(c *client) ([]user, error) {
+	var out []user
 	cursor := ""
 	for {
 		r, err := c.call("users.list", map[string]string{"limit": "200", "cursor": cursor})
 		if err != nil {
-			break
+			return out, err
 		}
 		for _, mv := range asList(r["members"]) {
 			m, _ := mv.(map[string]any)
 			id := str(m["id"])
 			prof, _ := m["profile"].(map[string]any)
-			name := str(prof["display_name"])
-			if name == "" {
-				name = str(prof["real_name"])
-			}
-			if name == "" {
-				name = str(m["name"])
-			}
-			if name == "" {
-				name = id
-			}
-			names[id] = name
+			out = append(out, user{
+				ID:       id,
+				Name:     firstNonEmpty(str(prof["display_name"]), str(prof["real_name"]), str(m["real_name"]), str(m["name"]), id),
+				RealName: firstNonEmpty(str(prof["real_name"]), str(m["real_name"])),
+			})
 		}
 		cursor = nextCursor(r)
 		if cursor == "" {
-			break
+			return out, nil
 		}
+	}
+}
+
+// userMap is the lenient form for rendering: a partial directory still beats
+// printing raw IDs, so a mid-walk failure keeps what it got.
+func userMap(c *client) map[string]string {
+	names := map[string]string{}
+	us, _ := listUsers(c)
+	for _, u := range us {
+		names[u.ID] = u.Name
 	}
 	return names
 }
@@ -674,9 +691,12 @@ func asList(v any) []any {
 	return l
 }
 
+// nextCursor reads Slack's pagination cursor. The field is next_cursor; reading
+// "cursor" silently stopped every paginated call after its first page, which
+// truncates rather than errors — a short user directory renders *wrong* names.
 func nextCursor(r map[string]any) string {
 	meta, _ := r["response_metadata"].(map[string]any)
-	return str(meta["cursor"])
+	return firstNonEmpty(str(meta["next_cursor"]), str(meta["cursor"]))
 }
 
 var chanIDRe = regexp.MustCompile(`^[CDG][A-Z0-9]+$`)
@@ -740,13 +760,51 @@ func cmdWorkspaces(reg []workspace, asJSON bool) {
 	if asJSON {
 		var out []map[string]string
 		for _, w := range reg {
-			out = append(out, map[string]string{"team": w.Team, "team_id": w.TeamID, "url": w.URL, "user": w.User})
+			// user_id is the signed-in member ID: how a caller tells its own
+			// messages apart without a directory lookup.
+			out = append(out, map[string]string{"team": w.Team, "team_id": w.TeamID, "url": w.URL, "user": w.User, "user_id": w.UserID})
 		}
 		printJSON(out)
 		return
 	}
 	for _, w := range reg {
-		fmt.Printf("%-28s %-40s (you: %s)\n", w.Team, w.URL, w.User)
+		fmt.Printf("%-28s %-40s (you: %s %s)\n", w.Team, w.URL, w.User, w.UserID)
+	}
+}
+
+// cmdUsers prints the workspace directory, so IDs in message bodies can be
+// resolved to names without `slack raw` — which a declared scope refuses.
+// A truncated directory renders *wrong* names rather than missing ones, so a
+// mid-walk failure is reported, not swallowed.
+func cmdUsers(w workspace, filter string, asJSON bool) {
+	us, err := listUsers(w.c)
+	if err != nil {
+		if len(us) == 0 {
+			fail(err)
+		}
+		fmt.Fprintf(os.Stderr, "warning: directory is incomplete after %d users: %v\n", len(us), err)
+	}
+	if filter != "" {
+		f := strings.ToLower(filter)
+		var keep []user
+		for _, u := range us {
+			if strings.Contains(strings.ToLower(u.Name), f) || strings.Contains(strings.ToLower(u.RealName), f) || strings.EqualFold(u.ID, filter) {
+				keep = append(keep, u)
+			}
+		}
+		us = keep
+	}
+	sort.Slice(us, func(i, j int) bool { return us[i].Name < us[j].Name })
+	if asJSON {
+		printJSON(us)
+		return
+	}
+	for _, u := range us {
+		you := ""
+		if u.ID == w.UserID {
+			you = "  (you)"
+		}
+		fmt.Printf("%-12s %-28s %s%s\n", u.ID, u.Name, u.RealName, you)
 	}
 }
 
@@ -1642,6 +1700,7 @@ usage:
   lurk [--json] slack workspaces
   lurk slack summary <workspace> [--mentions-hours 24] [--threads-hours 8]
   lurk [--json] slack mentions <workspace> [--user U…] [--hours 48] [--count 50]
+  lurk [--json] slack users    <workspace> [--filter s]
   lurk [--json] slack channels <workspace> [--types t] [--filter s]
   lurk [--json] slack history  <workspace> <#channel|ID> [--limit n] [--oldest ts] [--cursor c]
   lurk [--json] slack replies  <code|permalink> [--limit n]
@@ -1659,6 +1718,11 @@ for the session; a full permalink works too (and across sessions).
 message JSON, or a url_private/url_private_download URL. Without --out it writes
 to the temp dir under the file's own name and prints the path; --out - streams
 the bytes to stdout.
+
+'users' lists the whole workspace directory — id, display name, real name, and
+which one is you — so IDs in message text can be resolved to names. 'workspaces
+--json' carries your own member ID as user_id. Both stay available under a scope:
+a user directory isn't channel content.
 
 A declared scope, if one is in force, bounds every command here — workspaces and
 channels it doesn't name are unreadable, and 'raw' is refused outright. Run
@@ -1679,6 +1743,20 @@ func Run(args []string, asJSON bool) error {
 			return err
 		}
 		cmdWorkspaces(reg, asJSON)
+
+	case "users":
+		fs := flag.NewFlagSet("users", flag.ExitOnError)
+		filter := fs.String("filter", "", "substring match on name (or an exact user ID)")
+		rest := parseSub(fs, args[1:], 1, "users <workspace> [--filter s]")
+		reg, err := buildRegistry()
+		if err != nil {
+			return err
+		}
+		w, err := pick(reg, rest[0])
+		if err != nil {
+			return err
+		}
+		cmdUsers(w, *filter, asJSON)
 
 	case "channels":
 		fs := flag.NewFlagSet("channels", flag.ExitOnError)

@@ -38,7 +38,11 @@ Scope: if a config file declares which workspaces, channels, and Signal
 conversations lurk may read, every command is bound by it — flags can narrow it
 further, never widen it. The file is $LURK_CONFIG if set, else
 ~/.config/lurk/scope; with neither, lurk reads everything you're signed into.
-Set LURK_REQUIRE_SCOPE=1 to make an unresolvable config fatal instead.
+
+A $LURK_CONFIG that can't be read is always fatal — an explicitly set path that
+doesn't resolve is a mistake, never an intent to read everything. Set
+LURK_REQUIRE_SCOPE=1 to extend that to the unset case too, so running with no
+config at all fails instead of reading everything.
 
 Run 'lurk scope' to see the file format and what your config resolves to. It
 prints a worked example when no config is in force, so it's the place to start

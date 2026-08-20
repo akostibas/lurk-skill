@@ -99,13 +99,20 @@ Exactly one file applies, no merging: `$LURK_CONFIG` if set, else
 `~/.config/lurk/scope`, else nothing. Two contexts on one machine (you at a
 shell, an agent on a schedule) get two files and neither knows about the other.
 
-Set `LURK_REQUIRE_SCOPE=1` and lurk refuses to run unscoped — a typo'd
-`LURK_CONFIG` becomes a loud failure instead of a digest that quietly includes
-everything. Unattended callers should set both.
+A `LURK_CONFIG` that can't be read is always fatal, flag or no flag: a path you
+set explicitly and got wrong is a mistake, not a request to read everything. Set
+`LURK_REQUIRE_SCOPE=1` to extend that to the *unset* case — lurk then refuses to
+run with no config at all, instead of quietly including everything. Unattended
+callers should set both.
 
 `slack raw` and `signal raw` take unbounded targets, so they're refused while a
 scope is in force. Run them without `LURK_CONFIG` set if you mean to reach past
 it. Rationale in [ADR-0001](docs/adr/0001-declared-scope.md).
+
+Looking people up survives a scope: `lurk slack users <ws>` lists the whole
+workspace directory, and `lurk --json slack workspaces` reports your own member
+ID as `user_id`. A directory isn't channel content, so neither is scope-filtered
+— otherwise a `<@U123>` from someone outside your channels would stay a raw ID.
 
 ## Two things to know
 
