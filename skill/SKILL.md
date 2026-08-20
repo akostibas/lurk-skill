@@ -153,9 +153,10 @@ Save it as `~/.config/lurk/scope`, or anywhere with `$LURK_CONFIG` pointing at
 it. It's an allowlist: anything unnamed is unreadable, including a whole source
 — a Slack-only file excludes all of Signal. Use `lurk slack channels <ws>` and
 `lurk signal conversations` to get exact names first, then `lurk scope` to
-confirm the file resolves to what the user meant. For an unattended setup, also
-set `LURK_REQUIRE_SCOPE=1` so a broken path fails loudly instead of quietly
-reading everything.
+confirm the file resolves to what the user meant. A `$LURK_CONFIG` pointing at a
+missing file always fails loudly; for an unattended setup also set
+`LURK_REQUIRE_SCOPE=1`, so running with *no* config fails too rather than
+quietly reading everything.
 
 ## Limitations worth knowing before you report a gap
 
