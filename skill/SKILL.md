@@ -178,7 +178,12 @@ quietly reading everything.
 ## Notes
 
 - Credentials live in memory only; the Signal DB copy lands in a temp dir and is
-  deleted on exit. Nothing is written to disk or logged.
+  deleted on exit. No message content is written to disk or logged; the only
+  file lurk keeps is the cached latest version number (below).
+- **Updates:** once a week lurk checks GitHub for a newer release and, if
+  there is one, prints `lurk vX is available … run <path>/update.sh` on stderr
+  every run until upgraded. Tell the user and offer to run that script with
+  `--yes` (it rebuilds in ~30s); never upgrade without their go-ahead.
 - Slack tokens rotate when the user signs out or Slack forces re-auth; stale
   tokens are validated and dropped each run, so it self-heals.
 - This reads the user's *own* accounts using their *own* local sessions. It is
