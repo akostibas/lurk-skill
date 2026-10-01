@@ -777,11 +777,6 @@ func resolveChannel(c *client, ident string) (id, name string, err error) {
 // commands
 // ---------------------------------------------------------------------------
 
-func printJSON(v any) {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Println(string(b))
-}
-
 func cmdWorkspaces(reg []workspace, asJSON bool) {
 	if asJSON {
 		var out []map[string]string
@@ -790,7 +785,7 @@ func cmdWorkspaces(reg []workspace, asJSON bool) {
 			// messages apart without a directory lookup.
 			out = append(out, map[string]string{"team": w.Team, "team_id": w.TeamID, "url": w.URL, "user": w.User, "user_id": w.UserID})
 		}
-		printJSON(out)
+		digest.PrintJSON(out)
 		return
 	}
 	for _, w := range reg {
@@ -822,7 +817,7 @@ func cmdUsers(w workspace, filter string, asJSON bool) {
 	}
 	sort.Slice(us, func(i, j int) bool { return us[i].Name < us[j].Name })
 	if asJSON {
-		printJSON(us)
+		digest.PrintJSON(us)
 		return
 	}
 	for _, u := range us {
@@ -880,7 +875,7 @@ func cmdChannels(w workspace, types, filter string, asJSON bool) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	if asJSON {
-		printJSON(rows)
+		digest.PrintJSON(rows)
 		return
 	}
 	for _, r := range rows {
@@ -926,7 +921,7 @@ func cmdHistory(w workspace, channel string, limit int, oldest, cursor string, a
 		}
 	}
 	if asJSON {
-		printJSON(map[string]any{"channel": cname, "channel_id": cid, "messages": msgs, "next_cursor": nextCursor(r)})
+		digest.PrintJSON(map[string]any{"channel": cname, "channel_id": cid, "messages": msgs, "next_cursor": nextCursor(r)})
 		return
 	}
 	names := userMap(w.c)
@@ -968,7 +963,7 @@ func cmdReplies(w workspace, channel, threadTS string, limit int, asJSON bool) {
 	}
 	msgs := asList(r["messages"])
 	if asJSON {
-		printJSON(msgs)
+		digest.PrintJSON(msgs)
 		return
 	}
 	names := userMap(w.c)
@@ -1049,7 +1044,7 @@ func cmdFile(w workspace, ref, out string, asJSON bool) {
 	}
 	abs, _ := filepath.Abs(out)
 	if asJSON {
-		printJSON(map[string]any{"path": abs, "bytes": len(body), "mimetype": mimetype, "name": name})
+		digest.PrintJSON(map[string]any{"path": abs, "bytes": len(body), "mimetype": mimetype, "name": name})
 		return
 	}
 	extra := ""
@@ -1082,7 +1077,7 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 		}
 	}
 	if asJSON {
-		printJSON(matches)
+		digest.PrintJSON(matches)
 		return
 	}
 	// Slack's own total counts channels a scope may have just filtered out.
@@ -1474,7 +1469,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 	sort.Slice(mentions, func(i, j int) bool { return str(mentions[i]["ts"]) > str(mentions[j]["ts"]) })
 
-	type digest struct {
+	type mention struct {
 		Code        int    `json:"code,omitempty"`
 		MentionTS   string `json:"mention_ts"`
 		ChannelID   string `json:"channel_id"`
@@ -1492,7 +1487,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 
 	seen := map[string]bool{} // dedup by channel|thread_ts (same thread, multiple mentions)
-	var out []digest
+	var out []mention
 	for _, m := range mentions {
 		ch, _ := m["channel"].(map[string]any)
 		cid := str(ch["id"])
@@ -1503,7 +1498,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 		// own ts when it's a top-level, non-threaded message.
 		threadTS := threadRootFromPermalink(str(m["permalink"]), mts)
 
-		d := digest{
+		d := mention{
 			MentionTS:   mts,
 			ChannelID:   cid,
 			ChannelName: firstNonEmpty(str(ch["name"]), res.channel(cid)),
@@ -1563,7 +1558,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 
 	if asJSON {
-		printJSON(map[string]any{"member": memberID, "member_name": res.user(memberID), "hours": hours, "mentions": out})
+		digest.PrintJSON(map[string]any{"member": memberID, "member_name": res.user(memberID), "hours": hours, "mentions": out})
 		return
 	}
 
@@ -1913,7 +1908,7 @@ func Run(args []string, asJSON bool) error {
 		if err != nil {
 			return err
 		}
-		printJSON(r)
+		digest.PrintJSON(r)
 
 	case "search":
 		fs := flag.NewFlagSet("search", flag.ExitOnError)
