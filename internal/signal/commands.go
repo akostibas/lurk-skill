@@ -1,7 +1,6 @@
 package signal
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -65,12 +64,6 @@ func fmtTime(ms int64) string {
 		return ""
 	}
 	return time.UnixMilli(ms).Local().Format(tsLayout)
-}
-
-func printJSON(v any) {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	enc.Encode(v)
 }
 
 // --- scope ---
@@ -206,7 +199,7 @@ func cmdConversations(db *sqliteDB, jsonOut bool, filter, kind string, limit int
 	}
 	rows = keepInScope(rows, "id", "name")
 	if jsonOut {
-		printJSON(rows)
+		digest.PrintJSON(rows)
 		return nil
 	}
 	for _, r := range rows {
@@ -251,7 +244,7 @@ func cmdHistory(db *sqliteDB, jsonOut bool, convArg string, limit int, before in
 		rows[i], rows[j] = rows[j], rows[i]
 	}
 	if jsonOut {
-		printJSON(rows)
+		digest.PrintJSON(rows)
 		return nil
 	}
 	fmt.Printf("=== %s (%s) ===\n", c.Name, c.Type)
@@ -323,7 +316,7 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count, before,
 	}
 
 	if jsonOut {
-		printJSON(rows)
+		digest.PrintJSON(rows)
 		return nil
 	}
 
@@ -527,7 +520,7 @@ func cmdSummary(db *sqliteDB, jsonOut bool, hours int) error {
 		return err
 	}
 	if jsonOut {
-		printJSON(items)
+		digest.PrintJSON(items)
 		return nil
 	}
 	digest.Render(os.Stdout, items)
@@ -553,7 +546,7 @@ func cmdWhoami(db *sqliteDB, jsonOut bool) error {
 		}
 	}
 	if jsonOut {
-		printJSON(out)
+		digest.PrintJSON(out)
 		return nil
 	}
 	fmt.Printf("phone: %s\naci:   %s\n", out["phone"], out["aci"])
@@ -575,7 +568,7 @@ func cmdRaw(db *sqliteDB, query string) error {
 	if err != nil {
 		return err
 	}
-	printJSON(rows)
+	digest.PrintJSON(rows)
 	return nil
 }
 

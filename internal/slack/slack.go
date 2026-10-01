@@ -48,10 +48,36 @@ import (
 	"github.com/akostibas/lurk-skill/internal/scope"
 )
 
-// slackSupport is a function rather than a package var so it tracks HOME at
-// call time, matching signalDir() and letting tests point it at a fixture.
+// slackDirs lists where each Slack build keeps its data: direct download, then
+// the sandboxed Mac App Store build. Read at call time so tests can move HOME.
+func slackDirs() []string {
+	home := os.Getenv("HOME")
+	return []string{
+		filepath.Join(home, "Library", "Application Support", "Slack"),
+		filepath.Join(home, "Library", "Containers", "com.tinyspeck.slackmacgap", "Data", "Library", "Application Support", "Slack"),
+	}
+}
+
+// slackSupport picks the folder whose Cookies was written last: a Mac that
+// switched builds keeps the old folder with a stale session. With no Cookies
+// anywhere, the first folder that exists (so a signed-out app is still found).
 func slackSupport() string {
-	return filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "Slack")
+	dirs := slackDirs()
+	best, newest := "", time.Time{}
+	for _, d := range dirs {
+		if fi, err := os.Stat(filepath.Join(d, "Cookies")); err == nil && fi.ModTime().After(newest) {
+			best, newest = d, fi.ModTime()
+		}
+	}
+	if best != "" {
+		return best
+	}
+	for _, d := range dirs {
+		if _, err := os.Stat(d); err == nil {
+			return d
+		}
+	}
+	return dirs[0]
 }
 
 var tokenRe = regexp.MustCompile(`xoxc-\d+-\d+-\d+-[0-9a-f]+`)
@@ -507,7 +533,7 @@ func (w workspace) allows(id, name string) bool {
 // Keychain failure the user can't act on.
 func checkInstalled() error {
 	if _, err := os.Stat(slackSupport()); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("the Slack desktop app isn't installed (no %s)", slackSupport())
+		return fmt.Errorf("the Slack desktop app isn't installed (no %s)", strings.Join(slackDirs(), " or "))
 	}
 	if _, err := os.Stat(filepath.Join(slackSupport(), "Cookies")); errors.Is(err, os.ErrNotExist) {
 		return errors.New("Slack is installed but has no saved session — open the app and sign in")
@@ -751,11 +777,6 @@ func resolveChannel(c *client, ident string) (id, name string, err error) {
 // commands
 // ---------------------------------------------------------------------------
 
-func printJSON(v any) {
-	b, _ := json.MarshalIndent(v, "", "  ")
-	fmt.Println(string(b))
-}
-
 func cmdWorkspaces(reg []workspace, asJSON bool) {
 	if asJSON {
 		var out []map[string]string
@@ -764,7 +785,7 @@ func cmdWorkspaces(reg []workspace, asJSON bool) {
 			// messages apart without a directory lookup.
 			out = append(out, map[string]string{"team": w.Team, "team_id": w.TeamID, "url": w.URL, "user": w.User, "user_id": w.UserID})
 		}
-		printJSON(out)
+		digest.PrintJSON(out)
 		return
 	}
 	for _, w := range reg {
@@ -796,7 +817,7 @@ func cmdUsers(w workspace, filter string, asJSON bool) {
 	}
 	sort.Slice(us, func(i, j int) bool { return us[i].Name < us[j].Name })
 	if asJSON {
-		printJSON(us)
+		digest.PrintJSON(us)
 		return
 	}
 	for _, u := range us {
@@ -854,7 +875,7 @@ func cmdChannels(w workspace, types, filter string, asJSON bool) {
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	if asJSON {
-		printJSON(rows)
+		digest.PrintJSON(rows)
 		return
 	}
 	for _, r := range rows {
@@ -900,7 +921,7 @@ func cmdHistory(w workspace, channel string, limit int, oldest, cursor string, a
 		}
 	}
 	if asJSON {
-		printJSON(map[string]any{"channel": cname, "channel_id": cid, "messages": msgs, "next_cursor": nextCursor(r)})
+		digest.PrintJSON(map[string]any{"channel": cname, "channel_id": cid, "messages": msgs, "next_cursor": nextCursor(r)})
 		return
 	}
 	names := userMap(w.c)
@@ -942,7 +963,7 @@ func cmdReplies(w workspace, channel, threadTS string, limit int, asJSON bool) {
 	}
 	msgs := asList(r["messages"])
 	if asJSON {
-		printJSON(msgs)
+		digest.PrintJSON(msgs)
 		return
 	}
 	names := userMap(w.c)
@@ -1023,7 +1044,7 @@ func cmdFile(w workspace, ref, out string, asJSON bool) {
 	}
 	abs, _ := filepath.Abs(out)
 	if asJSON {
-		printJSON(map[string]any{"path": abs, "bytes": len(body), "mimetype": mimetype, "name": name})
+		digest.PrintJSON(map[string]any{"path": abs, "bytes": len(body), "mimetype": mimetype, "name": name})
 		return
 	}
 	extra := ""
@@ -1056,7 +1077,7 @@ func cmdSearch(w workspace, query string, count int, asJSON bool) {
 		}
 	}
 	if asJSON {
-		printJSON(matches)
+		digest.PrintJSON(matches)
 		return
 	}
 	// Slack's own total counts channels a scope may have just filtered out.
@@ -1448,7 +1469,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 	sort.Slice(mentions, func(i, j int) bool { return str(mentions[i]["ts"]) > str(mentions[j]["ts"]) })
 
-	type digest struct {
+	type mention struct {
 		Code        int    `json:"code,omitempty"`
 		MentionTS   string `json:"mention_ts"`
 		ChannelID   string `json:"channel_id"`
@@ -1466,7 +1487,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 
 	seen := map[string]bool{} // dedup by channel|thread_ts (same thread, multiple mentions)
-	var out []digest
+	var out []mention
 	for _, m := range mentions {
 		ch, _ := m["channel"].(map[string]any)
 		cid := str(ch["id"])
@@ -1477,7 +1498,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 		// own ts when it's a top-level, non-threaded message.
 		threadTS := threadRootFromPermalink(str(m["permalink"]), mts)
 
-		d := digest{
+		d := mention{
 			MentionTS:   mts,
 			ChannelID:   cid,
 			ChannelName: firstNonEmpty(str(ch["name"]), res.channel(cid)),
@@ -1537,7 +1558,7 @@ func cmdMentions(w workspace, memberID string, hours, count int, asJSON bool) {
 	}
 
 	if asJSON {
-		printJSON(map[string]any{"member": memberID, "member_name": res.user(memberID), "hours": hours, "mentions": out})
+		digest.PrintJSON(map[string]any{"member": memberID, "member_name": res.user(memberID), "hours": hours, "mentions": out})
 		return
 	}
 
@@ -1887,7 +1908,7 @@ func Run(args []string, asJSON bool) error {
 		if err != nil {
 			return err
 		}
-		printJSON(r)
+		digest.PrintJSON(r)
 
 	case "search":
 		fs := flag.NewFlagSet("search", flag.ExitOnError)

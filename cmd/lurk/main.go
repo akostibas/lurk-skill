@@ -186,7 +186,7 @@ func cmdSummary(args []string, asJSON bool) error {
 	}
 
 	if asJSON {
-		return printJSON(items)
+		return digest.PrintJSON(items)
 	}
 	digest.Render(os.Stdout, items)
 	return nil
