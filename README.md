@@ -50,6 +50,10 @@ binary has a new code identity, so the prompt returns after upgrades.
 Nothing to configure: whatever you're signed into in the Slack desktop app and
 Signal Desktop is what `lurk` can see.
 
+To upgrade, run `~/.claude/skills/lurk/update.sh`. lurk checks for a new
+release once a week and says so on stderr when one is out; it never installs
+anything on its own.
+
 ## Usage
 
 ```

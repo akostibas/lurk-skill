@@ -9,7 +9,7 @@
 # What it does:
 #   1. Resolves its own directory as the skill install location — so it upgrades
 #      wherever it was installed (~/.claude or a project-level .claude).
-#   2. Reads the latest release tag from the GitHub API.
+#   2. Reads the latest release tag from GitHub.
 #   3. Without --yes, prints the plan and exits (so the caller can confirm).
 #      With --yes (or an interactive yes), clones the tag into the system temp
 #      dir, runs `make install SKILL_DIR=<here>`, then removes the checkout.
@@ -31,7 +31,7 @@ SKILL_NAME="lurk"
 BIN="lurk"                  # binary that reports --version; "" if the skill has none
 # -----------------------------------------------------------------------------
 
-API_URL="https://api.github.com/repos/${REPO}/releases/latest"
+LATEST_URL="https://github.com/${REPO}/releases/latest"
 CLONE_URL="https://github.com/${REPO}.git"
 
 die() { echo "${SKILL_NAME} update: $*" >&2; exit 1; }
@@ -60,15 +60,12 @@ if [[ -n "$BIN" ]]; then
   fi
 fi
 
-# Latest release tag from GitHub. jq if present, else a tag_name grep.
-release_json="$(curl -fsSL -H "Accept: application/vnd.github+json" "$API_URL" 2>/dev/null)" \
-  || die "could not reach GitHub (offline or rate-limited)"
-if command -v jq >/dev/null 2>&1; then
-  latest="$(printf '%s' "$release_json" | jq -r '.tag_name // empty')"
-else
-  latest="$(printf '%s' "$release_json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"\([^"]*\)"$/\1/')"
-fi
-[[ -n "$latest" ]] || die "could not determine the latest release tag"
+# Latest release tag from the web redirect (…/releases/tag/<tag>), not the API:
+# anonymous API calls share a 60/hour per-IP limit that busy networks exhaust.
+redirect="$(curl -sS -o /dev/null -w '%{redirect_url}' "$LATEST_URL" 2>/dev/null)" \
+  || die "could not reach GitHub (offline?)"
+latest="${redirect##*/tag/}"
+[[ -n "$redirect" && "$latest" != "$redirect" ]] || die "could not determine the latest release tag"
 
 echo "Skill dir: $SKILL_DIR"
 echo "Current:   ${current:-unknown}"

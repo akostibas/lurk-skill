@@ -89,6 +89,9 @@ func main() {
 	// Always report exclusions, including on the error path: "skipped" has to
 	// stay distinguishable from "nothing waiting".
 	scope.Report(os.Stderr)
+	if n := updateNotice(version); n != "" {
+		fmt.Fprintln(os.Stderr, n)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
