@@ -48,10 +48,36 @@ import (
 	"github.com/akostibas/lurk-skill/internal/scope"
 )
 
-// slackSupport is a function rather than a package var so it tracks HOME at
-// call time, matching signalDir() and letting tests point it at a fixture.
+// slackDirs lists where each Slack build keeps its data: direct download, then
+// the sandboxed Mac App Store build. Read at call time so tests can move HOME.
+func slackDirs() []string {
+	home := os.Getenv("HOME")
+	return []string{
+		filepath.Join(home, "Library", "Application Support", "Slack"),
+		filepath.Join(home, "Library", "Containers", "com.tinyspeck.slackmacgap", "Data", "Library", "Application Support", "Slack"),
+	}
+}
+
+// slackSupport picks the folder whose Cookies was written last: a Mac that
+// switched builds keeps the old folder with a stale session. With no Cookies
+// anywhere, the first folder that exists (so a signed-out app is still found).
 func slackSupport() string {
-	return filepath.Join(os.Getenv("HOME"), "Library", "Application Support", "Slack")
+	dirs := slackDirs()
+	best, newest := "", time.Time{}
+	for _, d := range dirs {
+		if fi, err := os.Stat(filepath.Join(d, "Cookies")); err == nil && fi.ModTime().After(newest) {
+			best, newest = d, fi.ModTime()
+		}
+	}
+	if best != "" {
+		return best
+	}
+	for _, d := range dirs {
+		if _, err := os.Stat(d); err == nil {
+			return d
+		}
+	}
+	return dirs[0]
 }
 
 var tokenRe = regexp.MustCompile(`xoxc-\d+-\d+-\d+-[0-9a-f]+`)
@@ -507,7 +533,7 @@ func (w workspace) allows(id, name string) bool {
 // Keychain failure the user can't act on.
 func checkInstalled() error {
 	if _, err := os.Stat(slackSupport()); errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("the Slack desktop app isn't installed (no %s)", slackSupport())
+		return fmt.Errorf("the Slack desktop app isn't installed (no %s)", strings.Join(slackDirs(), " or "))
 	}
 	if _, err := os.Stat(filepath.Join(slackSupport(), "Cookies")); errors.Is(err, os.ErrNotExist) {
 		return errors.New("Slack is installed but has no saved session — open the app and sign in")
