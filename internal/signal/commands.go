@@ -231,14 +231,15 @@ func cmdHistory(db *sqliteDB, jsonOut bool, convArg string, limit int, before in
 		where += " AND m.rowid < ?"
 		args = append(args, before)
 	}
-	q := fmt.Sprintf(`SELECT m.rowid, m.type, m.sent_at, m.body, m.hasAttachments,
+	q := fmt.Sprintf(`SELECT m.rowid, m.type, m.sent_at, m.body, %s,
 		%s AS sender
 		FROM messages m LEFT JOIN conversations s ON s.serviceId = m.sourceServiceId
-		WHERE %s ORDER BY m.received_at DESC LIMIT %d`, dispName("s"), where, limit)
+		WHERE %s ORDER BY m.received_at DESC LIMIT %d`, attachmentsCol, dispName("s"), where, limit)
 	rows, err := db.query(q, args...)
 	if err != nil {
 		return err
 	}
+	rows = withAttachments(rows)
 	// Fetched newest-first; print oldest-first.
 	for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
 		rows[i], rows[j] = rows[j], rows[i]
@@ -254,20 +255,7 @@ func cmdHistory(db *sqliteDB, jsonOut bool, convArg string, limit int, before in
 		if minRow == 0 || rid < minRow {
 			minRow = rid
 		}
-		sender := asStr(r["sender"])
-		if asStr(r["type"]) == "outgoing" {
-			sender = "me"
-		} else if sender == "" {
-			sender = "?"
-		}
-		body := oneLine(asStr(r["body"]))
-		switch {
-		case asStr(r["type"]) == "call-history":
-			body = "[call]"
-		case body == "" && asInt(r["hasAttachments"]) > 0:
-			body = "[attachment]"
-		}
-		fmt.Printf("[%s] %s: %s\n", fmtTime(asInt(r["sent_at"])), sender, body)
+		fmt.Println(sigLine(r))
 	}
 	if len(rows) == limit && minRow > 0 {
 		fmt.Printf("\n(more above — page with: history %q --before %d)\n", convArg, minRow)
@@ -289,17 +277,17 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count, before,
 		label = " in " + c.Name
 	}
 	q := fmt.Sprintf(`SELECT m.rowid, m.conversationId AS conv_id, m.type, m.sent_at,
-		m.body, m.hasAttachments, %[1]s AS conv, %[2]s AS sender
+		m.body, %[5]s, %[1]s AS conv, %[2]s AS sender
 		FROM messages m
 		JOIN conversations c ON c.id = m.conversationId
 		LEFT JOIN conversations s ON s.serviceId = m.sourceServiceId
 		WHERE %[3]s ORDER BY m.received_at DESC LIMIT %[4]d`,
-		dispName("c"), dispName("s"), where, count)
+		dispName("c"), dispName("s"), where, count, attachmentsCol)
 	rows, err := db.query(q, args...)
 	if err != nil {
 		return err
 	}
-	rows = keepInScope(rows, "conv_id", "conv")
+	rows = withAttachments(keepInScope(rows, "conv_id", "conv"))
 
 	// With context requested, attach the surrounding messages to each hit.
 	// Both keys are always present (empty when that side is 0) so the JSON shape
@@ -331,7 +319,7 @@ func cmdSearch(db *sqliteDB, jsonOut bool, query, convArg string, count, before,
 				sender = "me"
 			}
 			fmt.Printf("[%s] %s → %s: %s\n", fmtTime(asInt(r["sent_at"])),
-				sender, asStr(r["conv"]), truncate(oneLine(asStr(r["body"])), 90))
+				sender, asStr(r["conv"]), withTags(truncate(oneLine(asStr(r["body"])), 90), r))
 		}
 		return nil
 	}
@@ -362,12 +350,9 @@ func sigLine(r map[string]any) string {
 	case sender == "":
 		sender = "?"
 	}
-	body := oneLine(asStr(r["body"]))
-	switch {
-	case asStr(r["type"]) == "call-history":
+	body := withTags(oneLine(asStr(r["body"])), r)
+	if asStr(r["type"]) == "call-history" {
 		body = "[call]"
-	case body == "" && asInt(r["hasAttachments"]) > 0:
-		body = "[attachment]"
 	}
 	return fmt.Sprintf("[%s] %s: %s", fmtTime(asInt(r["sent_at"])), sender, body)
 }
@@ -380,7 +365,7 @@ func sigLine(r map[string]any) string {
 // window. Overlapping windows from two nearby hits are not merged; each hit
 // prints its own, so a message can appear under more than one.
 func contextRows(db *sqliteDB, convID string, rowid int64, before, after int) (pre, post []map[string]any, err error) {
-	const sel = `SELECT m.rowid, m.type, m.sent_at, m.body, m.hasAttachments, %s AS sender
+	const sel = `SELECT m.rowid, m.type, m.sent_at, m.body, ` + attachmentsCol + `, %s AS sender
 		FROM messages m LEFT JOIN conversations s ON s.serviceId = m.sourceServiceId
 		WHERE m.conversationId=? AND m.type IN ('incoming','outgoing','call-history')
 		  AND m.rowid %s ? ORDER BY m.rowid %s LIMIT %d`
@@ -389,6 +374,7 @@ func contextRows(db *sqliteDB, convID string, rowid int64, before, after int) (p
 		if err != nil {
 			return nil, nil, err
 		}
+		pre = withAttachments(pre)
 		// Fetched nearest-first (descending); flip to chronological.
 		for i, j := 0, len(pre)-1; i < j; i, j = i+1, j-1 {
 			pre[i], pre[j] = pre[j], pre[i]
@@ -399,6 +385,7 @@ func contextRows(db *sqliteDB, convID string, rowid int64, before, after int) (p
 		if err != nil {
 			return nil, nil, err
 		}
+		post = withAttachments(post)
 	}
 	return pre, post, nil
 }

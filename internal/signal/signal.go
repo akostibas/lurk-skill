@@ -167,6 +167,7 @@ Commands:
   conversations [--filter s] [--dms|--groups] [--limit n]   list conversations by recent activity
   history <conv> [--limit n] [--before rowid]               messages in a conversation (oldest→newest)
   search <query> [--conv c] [--count n] [-C n | -A n -B n]  substring search over message text
+  file <ref> [--out path|-]                                 decrypt an attachment to a file (ref from history/search)
   summary [--hours n]                                       unread + recent-activity digest
   whoami                                                    your own phone / ACI
   raw <SELECT ...>                                          arbitrary read-only query (JSON out)
@@ -294,6 +295,13 @@ func Run(args []string, jsonOut bool) error {
 		}
 		before, after := contextLines(ctxS, beforeS, afterS)
 		err = cmdSearch(db, jsonOut, strings.Join(rest, " "), convArg, atoiOr(countS, 25), before, after)
+
+	case "file":
+		out, rest := popFlag(args, "out", true)
+		if len(rest) == 0 {
+			return fmt.Errorf("file needs an attachment ref (shown by history/search)")
+		}
+		err = cmdFile(db, jsonOut, rest[0], out)
 
 	case "summary":
 		hoursS, _ := popFlag(args, "hours", true)
