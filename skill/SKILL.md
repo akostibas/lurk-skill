@@ -50,6 +50,7 @@ lurk slack raw      <ws> <method> [k=v ...]
 lurk signal conversations [--filter s] [--dms|--groups] [--limit n]
 lurk signal history <conv> [--limit n] [--before rowid]
 lurk signal search  <query> [--conv c] [--count n] [-C n | -A n -B n]
+lurk signal file    <ref> [--out path]
 lurk signal summary [--hours n]
 lurk signal whoami
 lurk signal raw     <SELECT ...>
@@ -109,8 +110,14 @@ fetching before you can describe it. `--json slack history`/`replies` expose eac
 `id` (and `url_private`); pass either to `slack file` to download the bytes (an
 authenticated read-only GET, restricted to Slack's file hosts). Without `--out`
 it saves to the temp dir under the file's own name and prints the path, which you
-can then read/view; `--out -` streams to stdout. (Signal attachments aren't
-wired up yet — Slack only.)
+can then read/view; `--out -` streams to stdout.
+
+Signal works the same way: `signal history`/`search` tag each message's
+attachments inline, e.g. `[image: shot.png — fetch with: lurk signal file 4821]`
+(`--json` carries them as an `attachments` list). Run the printed command to save
+a decrypted copy. A tag saying `not on this Mac` means Signal Desktop never
+downloaded it and it has likely expired from Signal's servers — say so rather
+than retrying.
 
 ## Scope: what this machine lets you read
 

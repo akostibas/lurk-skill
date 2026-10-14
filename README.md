@@ -60,8 +60,8 @@ anything on its own.
 lurk summary [--hours 24] [--workspace s] [--no-slack] [--no-signal]
 lurk slack   <command> […]     # workspaces, summary, mentions, channels,
                                # history, replies, search, file, raw
-lurk signal  <command> […]     # conversations, history, search, summary,
-                               # whoami, raw
+lurk signal  <command> […]     # conversations, history, search, file,
+                               # summary, whoami, raw
 lurk scope                     # what this run is allowed to read
 ```
 

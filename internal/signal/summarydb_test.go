@@ -37,6 +37,10 @@ func newTestDB(t *testing.T) *sqliteDB {
 			id TEXT PRIMARY KEY, conversationId TEXT, body TEXT,
 			sent_at INTEGER, received_at INTEGER, type TEXT,
 			hasAttachments INTEGER, sourceServiceId TEXT);
+		CREATE TABLE message_attachments (
+			messageId TEXT, conversationId TEXT, attachmentType TEXT,
+			editHistoryIndex INTEGER, orderInMessage INTEGER, size INTEGER,
+			contentType TEXT, fileName TEXT, path TEXT, localKey TEXT);
 	`); err != nil {
 		t.Fatalf("creating the schema: %v", err)
 	}
