@@ -18,8 +18,8 @@
 
 set -euo pipefail
 
-VERSION="4.9.0"
-TARBALL_SHA256="91936630ce58a9979de3136bd5292535ee0c0b2d8e901c483335ac4fb2be4185"
+VERSION="4.19.0"
+TARBALL_SHA256="7075f96cbabe45b4ecfc2e6b1745a625f856f695b0827a5506ce9ed85b906aa0"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$REPO_ROOT/internal/signal"
