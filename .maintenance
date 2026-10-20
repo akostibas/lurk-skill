@@ -1,0 +1,5 @@
+# id | cadence | last done | what to run   (format: header of ~/bin/maintenance)
+
+# Dependabot can't see the vendored SQLCipher pin. Bump VERSION and TARBALL_SHA256
+# together in bin/vendor-sqlcipher.sh, then run bin/smoke-test.sh signal.
+sqlcipher-version | 120d | never | gh release list -R sqlcipher/sqlcipher -L 5; grep -E '^VERSION=' bin/vendor-sqlcipher.sh
