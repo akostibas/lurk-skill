@@ -34,13 +34,7 @@ SQLCipher sources.
 ```sh
 git clone https://github.com/akostibas/lurk-skill
 cd lurk-skill
-make install            # builds the binary into ~/.claude/skills/lurk/
-```
-
-To use it from a terminal too:
-
-```sh
-ln -sf ~/.claude/skills/lurk/lurk ~/bin/lurk
+make install            # installs the skill to ~/.claude/skills/lurk/ and the binary to ~/bin/lurk
 ```
 
 The first run after each build triggers a macOS Keychain prompt (`Slack Safe
