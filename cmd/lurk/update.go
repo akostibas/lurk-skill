@@ -17,12 +17,15 @@ const (
 	checkInterval = 7 * 24 * time.Hour
 )
 
+// updateCheck is set to "off" at build time when something else manages upgrades.
+var updateCheck = "on"
+
 // updateNotice returns a one-line upgrade hint, or "" when current. GitHub is
 // asked at most once a week; the answer is cached so the hint repeats on every
 // run until the user upgrades, and an offline check fails silently.
 func updateNotice(current string) string {
-	if parseVersion(current) == nil {
-		return "" // dev or dirty build
+	if updateCheck == "off" || parseVersion(current) == nil {
+		return "" // managed, dev or dirty build
 	}
 	dir, err := os.UserCacheDir()
 	if err != nil {

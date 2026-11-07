@@ -4,6 +4,15 @@ BIN_DIR   ?= $(HOME)/bin
 
 LDFLAGS := -X main.version=$(VERSION)
 
+# SKILLS_MANAGED=1: an outside tool (e.g. a skill sync) keeps lurk current, so
+# leave out update.sh and build without the upgrade notice.
+ifeq ($(SKILLS_MANAGED),1)
+LDFLAGS  += -X main.updateCheck=off
+UPDATE_SH :=
+else
+UPDATE_SH := skill/update.sh
+endif
+
 # The SQLCipher amalgamation isn't in git (see bin/vendor-sqlcipher.sh) — every
 # build target depends on it so a fresh clone just works.
 SQLCIPHER := internal/signal/sqlite3.c
@@ -20,8 +29,7 @@ install: $(SQLCIPHER)
 	go build -ldflags "$(LDFLAGS)" -o lurk ./cmd/lurk
 	rm -rf "$(SKILL_DIR)"
 	mkdir -p "$(SKILL_DIR)" "$(BIN_DIR)"
-	cp lurk skill/SKILL.md skill/update.sh "$(SKILL_DIR)/"
-	chmod +x "$(SKILL_DIR)/update.sh"
+	cp lurk skill/SKILL.md $(UPDATE_SH) "$(SKILL_DIR)/"
 	rm -f "$(BIN_DIR)/lurk"
 	cp lurk "$(BIN_DIR)/lurk"
 	@echo "Installed lurk $(VERSION) -> $(SKILL_DIR) and $(BIN_DIR)/lurk"

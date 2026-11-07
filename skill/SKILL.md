@@ -191,6 +191,7 @@ quietly reading everything.
   there is one, prints `lurk vX is available … run <path>/update.sh` on stderr
   every run until upgraded. Tell the user and offer to run that script with
   `--yes` (it rebuilds in ~30s); never upgrade without their go-ahead.
+  Installs kept current by a sync tool have no `update.sh` and never print this.
 - Slack tokens rotate when the user signs out or Slack forces re-auth; stale
   tokens are validated and dropped each run, so it self-heals.
 - This reads the user's *own* accounts using their *own* local sessions. It is
