@@ -1,5 +1,6 @@
 VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 SKILL_DIR ?= $(HOME)/.claude/skills/lurk
+BIN_DIR   ?= $(HOME)/bin
 
 LDFLAGS := -X main.version=$(VERSION)
 
@@ -13,15 +14,17 @@ build: $(SQLCIPHER)
 	go build -ldflags "$(LDFLAGS)" -o lurk ./cmd/lurk
 
 # The binary lives inside the skill dir: the skill is then self-contained, and
-# `update.sh` can replace binary and instructions together.
+# `update.sh` can replace binary and instructions together. Builds before
+# touching the install, so a failed build leaves the old one working.
 install: $(SQLCIPHER)
-	mkdir -p "$(SKILL_DIR)"
-	go build -ldflags "$(LDFLAGS)" -o "$(SKILL_DIR)/lurk" ./cmd/lurk
-	cp skill/SKILL.md "$(SKILL_DIR)/SKILL.md"
-	cp skill/update.sh "$(SKILL_DIR)/update.sh"
+	go build -ldflags "$(LDFLAGS)" -o lurk ./cmd/lurk
+	rm -rf "$(SKILL_DIR)"
+	mkdir -p "$(SKILL_DIR)" "$(BIN_DIR)"
+	cp lurk skill/SKILL.md skill/update.sh "$(SKILL_DIR)/"
 	chmod +x "$(SKILL_DIR)/update.sh"
-	@echo "Installed lurk $(VERSION) -> $(SKILL_DIR)"
-	@echo "For terminal use: ln -sf $(SKILL_DIR)/lurk ~/bin/lurk"
+	rm -f "$(BIN_DIR)/lurk"
+	cp lurk "$(BIN_DIR)/lurk"
+	@echo "Installed lurk $(VERSION) -> $(SKILL_DIR) and $(BIN_DIR)/lurk"
 
 test: $(SQLCIPHER)
 	go test ./...
