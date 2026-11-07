@@ -23,3 +23,11 @@ func TestNewer(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateCheckOff(t *testing.T) {
+	defer func(v string) { updateCheck = v }(updateCheck)
+	updateCheck = "off"
+	if n := updateNotice("v0.0.1"); n != "" {
+		t.Errorf("updateNotice with updateCheck=off = %q, want empty", n)
+	}
+}
