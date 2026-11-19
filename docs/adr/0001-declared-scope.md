@@ -1,6 +1,7 @@
 # ADR-0001: Readable scope is declared in a config file, enforced as a floor
 
-Status: Accepted (2026-08-19)
+Status: Accepted (2026-08-19); "any config file bounds reading" narrowed by
+[ADR-0002](0002-signal-calls-by-declared-grant.md)
 
 ## Context
 

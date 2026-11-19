@@ -70,6 +70,7 @@ fi
 if [[ "$want" == "both" || "$want" == "signal" ]]; then
   check "signal conversations" 1 "$bindir/lurk" signal conversations --limit 5
   check "signal summary"       1 "$bindir/lurk" summary --no-slack
+  check "signal calls"         1 "$bindir/lurk" signal calls   # status only; never joins
 fi
 
 if (( fails > 0 )); then

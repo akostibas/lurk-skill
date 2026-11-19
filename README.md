@@ -1,12 +1,13 @@
 # lurk
 
-One read-only window onto the chat you're already signed into on this Mac —
-Slack workspaces and Signal Desktop — with a
+One window onto the chat you're already signed into on this Mac — Slack
+workspaces and Signal Desktop — with a
 [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) skill that
 wraps it.
 
-`lurk` reads your own local sessions. It never sends, posts, reacts, joins, or
-marks anything read.
+`lurk` reads your own local sessions. It never sends, posts, reacts, or marks
+anything read. The one thing it can *do* is get this Mac on and off a Signal
+group call, and only in conversations [you've named](#signal-calls).
 
 ```
 $ lurk summary
@@ -55,8 +56,8 @@ lurk summary [--hours 24] [--workspace s] [--no-slack] [--no-signal]
 lurk slack   <command> […]     # workspaces, summary, mentions, channels,
                                # history, replies, search, file, raw
 lurk signal  <command> […]     # conversations, history, search, file,
-                               # summary, whoami, raw
-lurk scope                     # what this run is allowed to read
+                               # summary, whoami, raw, calls, call
+lurk scope                     # what this run may read, and act on
 ```
 
 Run `lurk slack` or `lurk signal` with no arguments for that source's full
@@ -111,6 +112,38 @@ Looking people up survives a scope: `lurk slack users <ws>` lists the whole
 workspace directory, and `lurk --json slack workspaces` reports your own member
 ID as `user_id`. A directory isn't channel content, so neither is scope-filtered
 — otherwise a `<@U123>` from someone outside your channels would stay a raw ID.
+
+## Signal calls
+
+`lurk signal calls` says which group calls are live and whether this Mac is on
+one. It only reads, and needs nothing set up.
+
+Joining, starting and leaving are off until you allow them, one conversation at
+a time, in the same config file:
+
+```
+# ~/.config/lurk/scope
+signal-calls Team Chat       # may start, join and leave calls in this group
+```
+
+```
+lurk signal call join  "Team Chat"            # a call that's already running
+lurk signal call start "Team Chat" [--ring]   # a new one
+lurk signal call leave
+```
+
+It enters muted with the camera off (`--mic`, `--camera` to change that), won't
+touch a call the Mac is already on, and `join` never starts a call. Starting
+doesn't ring phones unless you pass `--ring`, but Signal always notifies the
+group that a call began.
+
+A `signal-calls` line allows calls and nothing else: a file with only those
+lines leaves reading unrestricted.
+
+What it needs: Signal Desktop running with its window open (a quit Signal sees
+no calls at all, and `calls` says so), and Accessibility permission for the app
+running lurk, since it works by pressing Signal's own buttons. Group calls only.
+Rationale in [ADR-0002](docs/adr/0002-signal-calls-by-declared-grant.md).
 
 ## Two things to know
 

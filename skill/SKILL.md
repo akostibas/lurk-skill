@@ -1,6 +1,6 @@
 ---
 name: lurk
-description: Read-only access to the chat the user is signed into on this Mac — Slack workspaces and Signal Desktop. Catch-up digests across both, plus per-source listing, history, threads, and search. Use when the user asks you to look at, check, catch up on, summarize, or search their Slack or Signal (a channel, DM, thread, conversation, or workspace). Reads their own desktop sessions; never sends.
+description: Read-only access to the chat the user is signed into on this Mac — Slack workspaces and Signal Desktop. Catch-up digests across both, plus per-source listing, history, threads, and search. Use when the user asks you to look at, check, catch up on, summarize, or search their Slack or Signal (a channel, DM, thread, conversation, or workspace). Also sees live Signal group calls and, only where the user has allowed it, joins, starts or leaves one from Signal Desktop. Reads their own desktop sessions; never sends messages.
 ---
 
 # lurk
@@ -17,8 +17,12 @@ Read-only visibility into the chat the user is signed into on this Mac:
 
 **Read-only by design.** Slack calls are restricted to an allowlist of read
 methods; Signal only ever runs `SELECT`s against a *copy* of the database. No
-code path posts, replies, reacts, joins, edits, deletes, or marks anything read.
-Do not try to make it write — that is not what the user authorized.
+code path posts, replies, reacts, edits, deletes, or marks anything read. Do not
+try to make it write — that is not what the user authorized.
+
+**One exception, off by default:** Signal group calls (see [Calls](#signal-calls)
+below). lurk refuses to join, start or leave one unless the user's config names
+that conversation.
 
 ## Running it
 
@@ -54,6 +58,10 @@ lurk signal file    <ref> [--out path]
 lurk signal summary [--hours n]
 lurk signal whoami
 lurk signal raw     <SELECT ...>
+lurk signal calls
+lurk signal call join  <conv> [--mic] [--camera]
+lurk signal call start <conv> [--mic] [--camera] [--ring]
+lurk signal call leave
 
 lurk scope
 ```
@@ -118,6 +126,48 @@ attachments inline, e.g. `[image: shot.png — fetch with: lurk signal file 4821
 a decrypted copy. A tag saying `not on this Mac` means Signal Desktop never
 downloaded it and it has likely expired from Signal's servers — say so rather
 than retrying.
+
+## Signal calls
+
+**"Is a call on?" → `lurk signal calls`.** Read-only, always allowed. It lists
+live group calls and says whether this Mac's Signal is on one (`--json` gives
+`live`, `desktop`: `none|lobby|joined`, and `signal_running`).
+
+Read it carefully before reporting:
+
+- A live call means *someone* is on it — not necessarily the user. They may be
+  on it from their phone, or not at all.
+- `signal_running: false` (or the "isn't running" line) means calls **can't be
+  seen**, not that there are none. Signal Desktop has to be running when a call
+  starts for lurk to ever notice it.
+- A call can be up to a couple of minutes stale. Group calls only; 1:1 calls
+  don't show up.
+
+**Joining, starting, leaving → `lurk signal call …`.** These press Signal
+Desktop's own buttons, so they are real actions other people see:
+
+- **Only do it when the user asked for it**, for that conversation. "Check if a
+  call is on" is not a request to join one.
+- `join` only joins a call that is already running; `start` only starts a new
+  one. Neither falls through to the other — pick the one the user meant.
+- **Starting notifies the whole group**, every time. It doesn't ring phones
+  unless you pass `--ring`; only pass it if the user said to ring people.
+- Entering is muted with the camera off. Pass `--mic` / `--camera` only if asked.
+- If this Mac is already on a call or has a lobby open, `join`/`start` refuse and
+  say so. Report that; don't `leave` first unless the user asked you to.
+- After `join` or `start`, the Mac stays on the call until someone leaves.
+  Don't walk away from it: `leave` when the user's purpose is served, or tell
+  them it's still connected.
+
+**When it's refused for permission**, the error prints the exact
+`signal-calls <conversation>` line and the file to add it to. Relay that and
+ask; do not add the line yourself, and do not press Signal's buttons some other
+way. That line is the user's decision about where an agent may act.
+
+Other refusals are worth relaying verbatim, since each names its fix: Signal
+Desktop not running, its window closed, the chat not visible in Signal's list,
+the call window minimized, or the terminal lacking Accessibility permission
+(System Settings → Privacy & Security → Accessibility).
 
 ## Scope: what this machine lets you read
 

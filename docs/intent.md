@@ -12,17 +12,24 @@ anything from me today?" and it has no way to look.
 
 ## What lurk is for
 
-**One read-only window onto the chat you're already signed into on this Mac, for
-you and for an agent working on your behalf.**
+**One window onto the chat you're already signed into on this Mac, for you and
+for an agent working on your behalf — read-only unless you say otherwise.**
 
 Its north star is a single question: *what's waiting for me, and what have I not
 answered?* Everything else exists to support answering that.
 
-Three commitments:
+Alongside that, one narrower thing: where the user has said so, an agent can
+get this Mac onto a call that matters and off it again, so being present doesn't
+depend on the user reaching for the app.
 
-1. **Never writes.** Not posting, not replying, not reacting, not joining, not
-   marking read. This is what makes it safe to hand an agent. The moment it can
-   write, the trust model changes completely.
+Commitments:
+
+1. **Only reads, unless you declared otherwise — and never speaks for you.** No
+   posting, replying, reacting, or marking read, ever. The single exception is
+   being present on a call, and only in conversations the user has named in
+   advance. Without that declaration it acts on nothing. This is what makes it
+   safe to hand an agent: what it may touch is something you read, not something
+   you trust. See [ADR-0002](adr/0002-signal-calls-by-declared-grant.md).
 2. **No new credentials.** It reuses the sessions the user already has in the
    desktop apps. There is no bot to install, no workspace admin to ask, no API
    key to rotate. Adding a source must not mean adding a login.
@@ -40,6 +47,8 @@ Three commitments:
 - **Sending anything.** Replying belongs in the real client, where the user sees
   full context. Signal in particular would need a linked device via the Signal
   protocol — deliberately out of scope.
+- **Taking part in a call.** Presence, not participation: it gets the Mac on and
+  off a call. It doesn't speak, listen, record, or manage who else is there.
 - **Being a client.** No live tailing, no notifications, no UI. It answers a
   question and exits.
 - **Archiving or syncing.** It reads what the desktop apps already store
@@ -67,6 +76,10 @@ Three commitments:
   running `lurk scope`, without running the command itself.
 - Adding a fourth source means writing one `Digest()` function, not touching the
   other sources or the renderer.
+- An agent can tell that a call has started, be on it within seconds, and be off
+  it again, without the user touching the app — and nobody else is disturbed
+  more than they would be by the user doing the same thing by hand.
+- "Can't tell" is never reported as "no": when calls can't be seen, it says so.
 
 ## Signs it's malfunctioning
 
@@ -86,6 +99,12 @@ Three commitments:
   rather than something you read.
 - A conversation is dropped by scope without the run saying so, making an
   excluded digest look like a quiet one.
+- It acts anywhere the user didn't name, or an action exists that the
+  declaration doesn't bind.
+- An action disturbs something already under way — cuts into a call in
+  progress, rings people it was asked not to — or does more than it reported.
+- It reports an action as done when the app didn't do it.
+- The user has to re-grant, re-approve, or babysit each action.
 
 ## Where it could go
 

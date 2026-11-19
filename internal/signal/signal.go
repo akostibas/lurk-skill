@@ -159,7 +159,7 @@ func copyFile(src, dst string) error {
 }
 
 // Usage is the help text for `lurk signal`.
-const Usage = `lurk signal — read-only access to your local Signal Desktop messages (macOS)
+const Usage = `lurk signal — your local Signal Desktop messages, read-only; group calls only where allowed (macOS)
 
 Usage: lurk [--json] signal <command> [args]
 
@@ -171,6 +171,16 @@ Commands:
   summary [--hours n]                                       unread + recent-activity digest
   whoami                                                    your own phone / ACI
   raw <SELECT ...>                                          arbitrary read-only query (JSON out)
+  calls                                                     live group calls, and whether this Mac is on one
+  call join <conv> [--mic] [--camera]                       join a running group call from Signal Desktop
+  call start <conv> [--mic] [--camera] [--ring]             start a group call (the group is always notified)
+  call leave                                                leave the call this Mac is on
+
+'call' is the only thing lurk does rather than reads. It is refused unless the
+config has a 'signal-calls <conv>' line for that conversation (see: lurk scope),
+enters muted with the camera off unless told otherwise, and needs Signal Desktop
+running plus Accessibility permission for the app running lurk. 'calls' only
+sees what a running Signal Desktop has noticed; group calls only.
 
 <conv> is a conversation id or a case-insensitive substring of a name or phone number.
 --json (before the "signal" keyword) emits raw JSON instead of formatted text.
@@ -309,6 +319,12 @@ func Run(args []string, jsonOut bool) error {
 
 	case "whoami":
 		err = cmdWhoami(db, jsonOut)
+
+	case "calls":
+		err = cmdCalls(db, jsonOut)
+
+	case "call":
+		err = cmdCall(db, args)
 
 	case "raw":
 		if len(args) == 0 {
