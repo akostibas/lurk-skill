@@ -220,6 +220,11 @@ func joinCall(db *sqliteDB, convArg string, o callOpts) error {
 // startCall starts a new group call in convArg. It refuses when one is already
 // running there (join it instead) and when the desktop is busy with another.
 func startCall(db *sqliteDB, convArg string, o callOpts) error {
+	// A real run rang the group while the lobby's switch read "Turn on ringing",
+	// so that switch can't be trusted as proof of a silent start. Fix before lifting.
+	if !o.ring {
+		return errors.New("lurk can't yet start a call without ringing the group (its no-ring check proved unreliable) — refusing")
+	}
 	return enterCall(db, convArg, true, o)
 }
 
