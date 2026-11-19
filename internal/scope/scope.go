@@ -31,6 +31,13 @@ const Example = `To bound what lurk can read, write a scope file — one entry p
 Save it as ~/.config/lurk/scope, or anywhere and point $LURK_CONFIG at it.
 Anything the file doesn't name becomes unreadable, including a whole source:
 a Slack-only file excludes all of Signal. Re-run 'lurk scope' to check it.
+
+lurk acts in exactly one way, and only where the same file allows it:
+
+    signal-calls Team Chat       # may start, join and leave calls in this group
+
+That line grants calls, not reading. A file holding only signal-calls lines
+leaves reading unrestricted; add slack/signal lines to bound it as above.
 `
 
 // DefaultPath is the personal default, used when $LURK_CONFIG is unset.
@@ -56,10 +63,13 @@ type Scope struct {
 	Path   string
 	slack  []*wsScope
 	signal []sigEntry
+	calls  []sigEntry // Signal conversations lurk may start/join/leave calls in
+	reads  int        // slack/signal lines; a file with grants but none of these leaves reading unbounded
 }
 
 var (
-	cur      *Scope
+	cur      *Scope // the read floor; nil when unrestricted
+	grants   *Scope // the parsed file, kept for action grants even when cur is nil
 	excluded atomic.Int64
 )
 
@@ -89,8 +99,45 @@ func Load() error {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	s.Path = path
-	cur = s
+	grants = s
+	// A file of only action grants declares nothing about reading, so it must
+	// not bound it; an empty file still does (it names nothing readable).
+	if s.reads > 0 || len(s.calls) == 0 {
+		cur = s
+	}
+	if cur == nil && required() {
+		return fmt.Errorf("LURK_REQUIRE_SCOPE is set but %s only grants actions and bounds no reading, "+
+			"so nothing was read.\n\n%s", path, Example)
+	}
 	return nil
+}
+
+// ConfigPath is the file a caller would edit to change scope or grants: the one
+// in force, else the one that would apply if created.
+func ConfigPath() string {
+	if grants != nil {
+		return grants.Path
+	}
+	if p := os.Getenv("LURK_CONFIG"); p != "" {
+		return p
+	}
+	return DefaultPath()
+}
+
+// SignalCalls reports whether lurk may act on calls in a Signal conversation.
+// Unlike reading, acting is denied unless a signal-calls line names it.
+func SignalCalls(id, name, e164 string) bool {
+	return grants != nil && matchSignal(grants.calls, id, name, e164)
+}
+
+func matchSignal(entries []sigEntry, id, name, e164 string) bool {
+	for _, e := range entries {
+		if strings.EqualFold(e.Token, name) || strings.EqualFold(e.Token, id) ||
+			(e164 != "" && strings.EqualFold(e.Token, e164)) {
+			return true
+		}
+	}
+	return false
 }
 
 func required() bool { return os.Getenv("LURK_REQUIRE_SCOPE") == "1" }
@@ -129,7 +176,10 @@ func parse(r io.Reader) (*Scope, error) {
 			return nil, fmt.Errorf("line %d: %q names no conversation", n, line)
 		}
 		switch strings.ToLower(src) {
+		case "signal-calls":
+			s.calls = append(s.calls, sigEntry{Token: rest, key: strings.ToLower(rest)})
 		case "slack":
+			s.reads++
 			ws, ch, hasCh := strings.Cut(rest, "/")
 			ws = strings.TrimSpace(ws)
 			e := s.ws(ws)
@@ -143,9 +193,10 @@ func parse(r io.Reader) (*Scope, error) {
 			}
 			e.Chans[ch] = true
 		case "signal":
+			s.reads++
 			s.signal = append(s.signal, sigEntry{Token: rest, key: strings.ToLower(rest)})
 		default:
-			return nil, fmt.Errorf("line %d: unknown source %q (want \"slack\" or \"signal\")", n, src)
+			return nil, fmt.Errorf("line %d: unknown source %q (want \"slack\", \"signal\" or \"signal-calls\")", n, src)
 		}
 	}
 	return s, sc.Err()
@@ -212,13 +263,7 @@ func (s *Scope) Signal(id, name, e164 string) bool {
 	if s == nil {
 		return true
 	}
-	for _, e := range s.signal {
-		if strings.EqualFold(e.Token, name) || strings.EqualFold(e.Token, id) ||
-			(e164 != "" && strings.EqualFold(e.Token, e164)) {
-			return true
-		}
-	}
-	return false
+	return matchSignal(s.signal, id, name, e164)
 }
 
 // SignalTokens is the raw list, for describing the scope and for narrowing a
@@ -272,8 +317,12 @@ func Refuse(what string) error {
 // unreadable enough that a wrong-but-plausible config would go unnoticed, so
 // being able to see this before a run is what makes the scope checkable.
 func Describe(w io.Writer) {
+	defer describeGrants(w)
 	if cur == nil {
 		fmt.Fprint(w, "no scope in force — lurk reads everything you're signed into.\n\n")
+		if grants != nil {
+			return // a grants-only file is in force; the how-to below would be noise
+		}
 		env := "$LURK_CONFIG (unset)"
 		if p := os.Getenv("LURK_CONFIG"); p != "" {
 			env = "$LURK_CONFIG=" + p + " (unreadable)"
@@ -305,5 +354,17 @@ func Describe(w io.Writer) {
 	}
 	for _, e := range cur.signal {
 		fmt.Fprintf(w, "signal %s\n", e.Token)
+	}
+}
+
+// describeGrants states what lurk may act on, which is nothing unless granted.
+func describeGrants(w io.Writer) {
+	if grants == nil || len(grants.calls) == 0 {
+		fmt.Fprintln(w, "\nactions: none — lurk only reads (a signal-calls line would allow calls)")
+		return
+	}
+	fmt.Fprintf(w, "\nactions allowed by %s:\n", grants.Path)
+	for _, e := range grants.calls {
+		fmt.Fprintf(w, "signal-calls %s  (start, join and leave calls)\n", e.Token)
 	}
 }

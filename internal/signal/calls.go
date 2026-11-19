@@ -17,6 +17,9 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/akostibas/lurk-skill/internal/digest"
+	"github.com/akostibas/lurk-skill/internal/scope"
 )
 
 // peekFresh bounds how old a device count may be and still mean "live". Signal
@@ -138,10 +141,30 @@ type groupCall struct {
 // callStatus is the read-only answer to "is a call on, and is this Mac in it?".
 // Device counts say a call is live, not that the user is in it on another device.
 type callStatus struct {
-	Live        []groupCall `json:"live"`
-	Desktop     string      `json:"desktop"` // none | lobby | joined
-	DesktopConv string      `json:"desktop_conv,omitempty"`
-	desktopID   string
+	// SignalRunning false means calls can't be seen at all, not that none are on.
+	SignalRunning bool        `json:"signal_running"`
+	Live          []groupCall `json:"live"`
+	Desktop       string      `json:"desktop"` // none | lobby | joined
+	DesktopConv   string      `json:"desktop_conv,omitempty"`
+	desktop       *conv       // nil when the desktop's call can't be named
+}
+
+func (st *callStatus) desktopID() string {
+	if st.desktop == nil {
+		return ""
+	}
+	return st.desktop.ID
+}
+
+// mayCall is the opt-in gate for lurk's only actions: nothing is pressed in a
+// conversation unless the config grants calls there.
+func mayCall(c *conv, verb string) error {
+	if scope.SignalCalls(c.ID, c.Name, c.E164) {
+		return nil
+	}
+	return fmt.Errorf("lurk isn't allowed to %s calls in %q — it only reads unless told otherwise. "+
+		"To allow it, add this line to %s:\n\n    signal-calls %s\n\n(see: lurk scope)",
+		verb, c.Name, scope.ConfigPath(), c.Name)
 }
 
 // convByTail resolves a redacted log id to a group chat; nil when it is
@@ -165,7 +188,13 @@ func getCallStatus(db *sqliteDB, now time.Time) (*callStatus, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := &callStatus{Desktop: l.desktopState(), Live: []groupCall{}}
+	_, pidErr := signalPID()
+	st := &callStatus{SignalRunning: pidErr == nil, Desktop: l.desktopState(), Live: []groupCall{}}
+	if !st.SignalRunning {
+		// A quit Signal can't be on a call, whatever its log last said.
+		st.Desktop = desktopNone
+		return st, nil
+	}
 	for _, tail := range l.liveTails(now) {
 		if c := convByTail(db, "groupId", tail); c != nil {
 			p := l.peeks[tail]
@@ -175,18 +204,18 @@ func getCallStatus(db *sqliteDB, now time.Time) (*callStatus, error) {
 	if st.Desktop != desktopNone {
 		st.DesktopConv = "a chat lurk can't name"
 		if c := convByTail(db, "id", l.desktopTail); c != nil {
-			st.DesktopConv, st.desktopID = c.Name, c.ID
+			st.DesktopConv, st.desktop = c.Name, c
 		}
 	}
 	// Signal stops logging device counts for a call the desktop itself is in,
 	// so that call is live on the desktop's own say-so.
-	if st.Desktop == desktopJoined && st.desktopID != "" {
+	if st.Desktop == desktopJoined && st.desktop != nil {
 		listed := false
 		for _, g := range st.Live {
-			listed = listed || g.ConvID == st.desktopID
+			listed = listed || g.ConvID == st.desktop.ID
 		}
 		if !listed {
-			st.Live = append(st.Live, groupCall{ConvID: st.desktopID, Name: st.DesktopConv, Devices: 1, SeenAt: l.desktopAt})
+			st.Live = append(st.Live, groupCall{ConvID: st.desktop.ID, Name: st.DesktopConv, Devices: 1, SeenAt: l.desktopAt})
 		}
 	}
 	return st, nil
@@ -231,13 +260,19 @@ func enterCall(db *sqliteDB, convArg string, start bool, o callOpts) error {
 	if err != nil {
 		return err
 	}
+	if err := mayCall(c, map[bool]string{true: "start", false: "join"}[start]); err != nil {
+		return err
+	}
 	st, err := getCallStatus(db, time.Now())
 	if err != nil {
 		return err
 	}
+	if !st.SignalRunning {
+		return errors.New("Signal Desktop isn't running")
+	}
 	switch st.Desktop {
 	case desktopJoined:
-		if st.desktopID == c.ID {
+		if st.desktopID() == c.ID {
 			return fmt.Errorf("Signal Desktop is already on the call in %q — nothing to do", c.Name)
 		}
 		return fmt.Errorf("Signal Desktop is already on a call (%s) — leaving it undisturbed; leave that call first", st.DesktopConv)
@@ -337,14 +372,22 @@ func enterCall(db *sqliteDB, convArg string, start bool, o callOpts) error {
 }
 
 // leaveCall takes Signal Desktop out of the call (or pre-join lobby) it is in.
-func leaveCall() error {
-	l, err := readCallLog()
+func leaveCall(db *sqliteDB) error {
+	st, err := getCallStatus(db, time.Now())
 	if err != nil {
 		return err
 	}
-	button := map[string]string{desktopJoined: "Leave", desktopLobby: "Cancel"}[l.desktopState()]
+	button := map[string]string{desktopJoined: "Leave", desktopLobby: "Cancel"}[st.Desktop]
 	if button == "" {
 		return errors.New("Signal Desktop isn't on a call — nothing to leave")
+	}
+	// Hanging up is an action too: only in a chat the config grants calls in.
+	if st.desktop == nil {
+		return errors.New("Signal Desktop is on a call lurk can't name (ambiguous, or outside the declared scope), " +
+			"so it can't tell whether it may hang up — leaving it alone")
+	}
+	if err := mayCall(st.desktop, "leave"); err != nil {
+		return err
 	}
 	ui, err := openSignalUI()
 	if err != nil {
@@ -379,4 +422,73 @@ func waitDesktop(want string, timeout time.Duration) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// --- commands ---
+
+func cmdCalls(db *sqliteDB, jsonOut bool) error {
+	st, err := getCallStatus(db, time.Now())
+	if err != nil {
+		return err
+	}
+	if jsonOut {
+		digest.PrintJSON(st)
+		return nil
+	}
+	if !st.SignalRunning {
+		fmt.Println("Signal Desktop isn't running, so calls can't be seen — that is not the same as no calls.")
+		return nil
+	}
+	if len(st.Live) == 0 {
+		fmt.Println("no live group calls")
+	}
+	for _, g := range st.Live {
+		fmt.Printf("live call: %s — %d device(s) connected (as of %s)\n", g.Name, g.Devices, g.SeenAt.Local().Format("15:04"))
+	}
+	switch st.Desktop {
+	case desktopJoined:
+		fmt.Printf("this Mac: on the call in %s\n", st.DesktopConv)
+	case desktopLobby:
+		fmt.Printf("this Mac: call lobby open (%s), not yet joined\n", st.DesktopConv)
+	default:
+		fmt.Println("this Mac: not on a call")
+	}
+	return nil
+}
+
+const callUsage = `usage: lurk signal call join  <conv> [--mic] [--camera]
+       lurk signal call start <conv> [--mic] [--camera] [--ring]
+       lurk signal call leave`
+
+func cmdCall(db *sqliteDB, args []string) error {
+	if len(args) == 0 {
+		return errors.New(callUsage)
+	}
+	verb, rest := args[0], args[1:]
+	mic, rest := popFlag(rest, "mic", false)
+	camera, rest := popFlag(rest, "camera", false)
+	ring, rest := popFlag(rest, "ring", false)
+	o := callOpts{mic: mic == "true", camera: camera == "true", ring: ring == "true"}
+	onOff := map[bool]string{true: "on", false: "off"}
+	how := fmt.Sprintf("mic %s, camera %s", onOff[o.mic], onOff[o.camera])
+	switch {
+	case verb == "leave" && len(rest) == 0:
+		if err := leaveCall(db); err != nil {
+			return err
+		}
+		fmt.Println("left the call")
+	case verb == "join" && len(rest) == 1 && !o.ring:
+		if err := joinCall(db, rest[0], o); err != nil {
+			return err
+		}
+		fmt.Printf("joined the call (%s)\n", how)
+	case verb == "start" && len(rest) == 1:
+		if err := startCall(db, rest[0], o); err != nil {
+			return err
+		}
+		fmt.Printf("started a call (%s, ringing %s) — the whole group is notified either way\n", how, onOff[o.ring])
+	default:
+		return errors.New(callUsage)
+	}
+	return nil
 }

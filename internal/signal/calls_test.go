@@ -66,17 +66,15 @@ func TestToggle(t *testing.T) {
 	}
 }
 
-// Dev hook against the real Signal Desktop, until calls have a CLI surface:
+// Diagnostics against the real Signal Desktop, for when a Signal update moves
+// the buttons `lurk signal call` presses. Neither enters a call:
 //
-//	LURK_LIVE_CALLS=status       go test ./internal/signal -run TestLiveCalls -v
-//	LURK_LIVE_CALLS=join:<conv>  …  (joins muted, camera off)
-//	LURK_LIVE_CALLS=start:<conv> …  (STARTS a real call: muted, camera off, no ringing)
-//	LURK_LIVE_CALLS=leave        …
-//	LURK_LIVE_CALLS=ui           …  (can lurk read Signal's buttons? presses nothing)
+//	LURK_LIVE_CALLS=ui           go test -count=1 ./internal/signal -run TestLiveCalls -v
+//	LURK_LIVE_CALLS=lobby:<conv> …  (opens the start lobby, logs what it says, cancels)
 func TestLiveCalls(t *testing.T) {
 	op, arg, _ := strings.Cut(os.Getenv("LURK_LIVE_CALLS"), ":")
 	if op == "" {
-		t.Skip("set LURK_LIVE_CALLS=status|ui|join:<conv>|start:<conv>|leave to run against the real Signal Desktop")
+		t.Skip("set LURK_LIVE_CALLS=ui|lobby:<conv> to run against the real Signal Desktop")
 	}
 	if op == "ui" { // reads Signal's buttons, presses nothing
 		start := time.Now()
@@ -89,13 +87,6 @@ func TestLiveCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Logf("%d buttons in %s; Join=%d Leave=%d", len(b), time.Since(start).Round(time.Millisecond), b.count("Join"), b.count("Leave"))
-		return
-	}
-	if op == "leave" {
-		if err := leaveCall(); err != nil {
-			t.Fatal(err)
-		}
-		t.Log("left")
 		return
 	}
 	db, cleanup, err := openSignalDB()
@@ -150,23 +141,6 @@ func TestLiveCalls(t *testing.T) {
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
-	case "status":
-		st, err := getCallStatus(db, time.Now())
-		if err != nil {
-			t.Fatal(err)
-		}
-		out, _ := json.MarshalIndent(st, "", "  ")
-		t.Logf("%s", out)
-	case "join", "start":
-		enter := joinCall
-		if op == "start" {
-			enter = startCall
-		}
-		began := time.Now()
-		if err := enter(db, arg, callOpts{}); err != nil {
-			t.Fatal(err)
-		}
-		t.Logf("%s: on the call in %s", op, time.Since(began).Round(time.Millisecond))
 	default:
 		t.Fatalf("unknown LURK_LIVE_CALLS op %q", op)
 	}

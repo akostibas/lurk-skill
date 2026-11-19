@@ -106,6 +106,15 @@ import (
 	"unsafe"
 )
 
+// signalPID finds the running Signal Desktop's main process.
+func signalPID() (int, error) {
+	out, err := exec.Command("pgrep", "-x", "Signal").Output()
+	if err != nil || len(strings.Fields(string(out))) == 0 {
+		return 0, errors.New("Signal Desktop isn't running")
+	}
+	return strconv.Atoi(strings.Fields(string(out))[0])
+}
+
 // signalUI is a handle on the running Signal Desktop's button tree.
 type signalUI struct{ pid int }
 
@@ -114,13 +123,9 @@ func openSignalUI() (*signalUI, error) {
 		return nil, errors.New("lurk needs Accessibility permission to press Signal's buttons — " +
 			"enable the app running lurk (your terminal) under System Settings → Privacy & Security → Accessibility")
 	}
-	out, err := exec.Command("pgrep", "-x", "Signal").Output()
+	pid, err := signalPID()
 	if err != nil {
-		return nil, errors.New("Signal Desktop isn't running")
-	}
-	pid, err := strconv.Atoi(strings.Fields(string(out))[0])
-	if err != nil {
-		return nil, fmt.Errorf("find Signal's process: %w", err)
+		return nil, err
 	}
 	ui := &signalUI{pid: pid}
 	// The tree fills in asynchronously after the first accessibility request.
