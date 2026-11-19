@@ -144,11 +144,13 @@ type callStatus struct {
 	desktopID   string
 }
 
-// convByTail resolves a redacted log id to a conversation; nil when it is
-// ambiguous, unknown, or outside the declared scope.
+// convByTail resolves a redacted log id to a group chat; nil when it is
+// ambiguous, unknown, or outside the declared scope. Group-only because the
+// conversation-id tail is just 3 hex chars and collides across all chats.
 func convByTail(db *sqliteDB, col, tail string) *conv {
 	rows, err := db.query(fmt.Sprintf(
-		"SELECT id, type, %s AS name, e164 FROM conversations c WHERE c.%s LIKE '%%'||?", dispName("c"), col), tail)
+		"SELECT id, type, %s AS name, e164 FROM conversations c WHERE c.type='group' AND c.%s LIKE '%%'||?",
+		dispName("c"), col), tail)
 	if err != nil {
 		return nil
 	}
@@ -171,9 +173,20 @@ func getCallStatus(db *sqliteDB, now time.Time) (*callStatus, error) {
 		}
 	}
 	if st.Desktop != desktopNone {
-		st.DesktopConv = "a conversation outside the declared scope"
+		st.DesktopConv = "a chat lurk can't name"
 		if c := convByTail(db, "id", l.desktopTail); c != nil {
 			st.DesktopConv, st.desktopID = c.Name, c.ID
+		}
+	}
+	// Signal stops logging device counts for a call the desktop itself is in,
+	// so that call is live on the desktop's own say-so.
+	if st.Desktop == desktopJoined && st.desktopID != "" {
+		listed := false
+		for _, g := range st.Live {
+			listed = listed || g.ConvID == st.desktopID
+		}
+		if !listed {
+			st.Live = append(st.Live, groupCall{ConvID: st.desktopID, Name: st.DesktopConv, Devices: 1, SeenAt: l.desktopAt})
 		}
 	}
 	return st, nil
