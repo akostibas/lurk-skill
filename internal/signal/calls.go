@@ -2,7 +2,8 @@ package signal
 
 // Group-call awareness and control for Signal Desktop. Detection is read-only:
 // the DB never records a call ending, so liveness comes from Signal's own log.
-// joinCall/leaveCall are the one place lurk acts, by pressing Signal's buttons.
+// join/start/leave are the one place lurk acts, by pressing Signal's buttons,
+// and only where the config grants it (mayCall). See docs/adr/0002.
 
 import (
 	"bufio"

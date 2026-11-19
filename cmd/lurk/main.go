@@ -1,7 +1,8 @@
-// Command lurk gives read-only visibility into the chat you're signed into on
-// this Mac — Slack workspaces and Signal Desktop — from one place.
+// Command lurk gives visibility into the chat you're signed into on this Mac —
+// Slack workspaces and Signal Desktop — from one place.
 //
-// It never sends, posts, reacts, or marks anything read. See the per-source
+// It never sends, posts, reacts, or marks anything read. Its one action, Signal
+// group calls, is denied unless the config grants it. See the per-source
 // packages for how each one reaches its data.
 package main
 
@@ -19,14 +20,14 @@ import (
 // version is injected at build time via -ldflags -X main.version.
 var version = "dev"
 
-const usage = `lurk — read-only access to the chat you're signed into on this Mac.
+const usage = `lurk — access to the chat you're signed into on this Mac, read-only by default.
 
 usage:
   lurk summary [--hours n] [--workspace s] [--no-slack] [--no-signal]
                               catch-up digest across every source
   lurk slack  <command> […]   Slack workspaces (see: lurk slack)
   lurk signal <command> […]   Signal Desktop  (see: lurk signal)
-  lurk scope                  what this run may read, and how to declare it
+  lurk scope                  what this run may read and act on, and how to declare it
 
   --json      emit raw JSON instead of formatted text (before the command)
   --version   print the build version
@@ -48,8 +49,10 @@ Run 'lurk scope' to see the file format and what your config resolves to. It
 prints a worked example when no config is in force, so it's the place to start
 whether you're declaring a scope or checking one.
 
-lurk only ever reads. There is no code path that posts, replies, reacts,
-joins, or marks anything read.
+lurk only reads, with one exception you have to switch on: Signal group calls
+('lurk signal call'), allowed per conversation by a 'signal-calls' line in the
+same config file. There is no code path that posts, replies, reacts, or marks
+anything read.
 `
 
 func main() {
