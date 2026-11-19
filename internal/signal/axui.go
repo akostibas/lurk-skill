@@ -14,6 +14,7 @@ typedef struct {
 	size_t len, cap;
 	const char *press;
 	int prefix, pressed, nodes;
+	int texts; // collect static text instead of button titles
 } axwalk;
 
 static char *ax_str(AXUIElementRef el, CFStringRef attr) {
@@ -32,7 +33,7 @@ static char *ax_str(AXUIElementRef el, CFStringRef attr) {
 static void ax_walk(AXUIElementRef el, axwalk *w, int depth) {
 	if (w->pressed || depth > 100 || w->nodes++ > 50000) return;
 	char *role = ax_str(el, kAXRoleAttribute);
-	if (role && strcmp(role, "AXButton") == 0) {
+	if (!w->texts && role && strcmp(role, "AXButton") == 0) {
 		char *t = ax_str(el, kAXTitleAttribute);
 		if (t && *t) {
 			size_t n = strlen(t);
@@ -44,6 +45,19 @@ static void ax_walk(AXUIElementRef el, axwalk *w, int depth) {
 			w->buf[w->len] = 0;
 			int hit = w->press && (w->prefix ? strncmp(t, w->press, strlen(w->press)) == 0 : strcmp(t, w->press) == 0);
 			if (hit) w->pressed = AXUIElementPerformAction(el, kAXPressAction) == kAXErrorSuccess ? 1 : -1;
+		}
+		free(t);
+	}
+	if (w->texts && role && strcmp(role, "AXStaticText") == 0) {
+		char *t = ax_str(el, kAXValueAttribute);
+		if (t && *t) {
+			size_t n = strlen(t);
+			for (size_t i = 0; i < n; i++) if (t[i] == '\n') t[i] = ' ';
+			if (w->len + n + 2 > w->cap) { w->cap = (w->cap + n + 2) * 2; w->buf = realloc(w->buf, w->cap); }
+			memcpy(w->buf + w->len, t, n);
+			w->len += n;
+			w->buf[w->len++] = '\n';
+			w->buf[w->len] = 0;
 		}
 		free(t);
 	}
@@ -60,7 +74,7 @@ static void ax_walk(AXUIElementRef el, axwalk *w, int depth) {
 
 // Returns newline-separated button titles (caller frees). With press set, the
 // walk stops at the first matching button and presses it.
-static char *ax_scan(int pid, const char *press, int prefix, int *pressed) {
+static char *ax_scan(int pid, const char *press, int prefix, int texts, int *pressed) {
 	AXUIElementRef app = AXUIElementCreateApplication(pid);
 	AXUIElementSetMessagingTimeout(app, 3.0);
 	// Electron hides its web content from accessibility until asked; resets on app restart.
@@ -68,6 +82,7 @@ static char *ax_scan(int pid, const char *press, int prefix, int *pressed) {
 	axwalk w = {0};
 	w.press = press;
 	w.prefix = prefix;
+	w.texts = texts;
 	w.cap = 4096;
 	w.buf = malloc(w.cap);
 	w.buf[0] = 0;
@@ -150,18 +165,30 @@ func (ui *signalUI) scan(press string, prefix bool) (buttons, bool, error) {
 		p = 1
 	}
 	var pressed C.int
-	raw := C.ax_scan(C.int(ui.pid), cpress, p, &pressed)
+	raw := C.ax_scan(C.int(ui.pid), cpress, p, 0, &pressed)
 	defer C.free(unsafe.Pointer(raw))
 	if pressed < 0 {
 		return nil, false, fmt.Errorf("Signal refused the press of %q", press)
 	}
-	var b buttons
-	for _, t := range strings.Split(C.GoString(raw), "\n") {
+	return lines(C.GoString(raw)), pressed > 0, nil
+}
+
+// texts is every piece of static text on screen, in tree order.
+func (ui *signalUI) texts() []string {
+	var pressed C.int
+	raw := C.ax_scan(C.int(ui.pid), nil, 0, 1, &pressed)
+	defer C.free(unsafe.Pointer(raw))
+	return lines(C.GoString(raw))
+}
+
+func lines(s string) []string {
+	var out []string
+	for t := range strings.SplitSeq(s, "\n") {
 		if t != "" {
-			b = append(b, t)
+			out = append(out, t)
 		}
 	}
-	return b, pressed > 0, nil
+	return out
 }
 
 func (ui *signalUI) list() (buttons, error) {

@@ -104,6 +104,52 @@ func TestLiveCalls(t *testing.T) {
 	}
 	defer cleanup()
 	switch op {
+	case "lobby": // opens the start lobby, watches it for 3s, cancels; never presses Start
+		c, err := resolveConv(db, arg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := getCallStatus(db, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if st.Desktop != desktopNone || len(st.Live) > 0 {
+			t.Fatalf("not idle (desktop %s, %d live calls); not opening a lobby", st.Desktop, len(st.Live))
+		}
+		ui, err := openSignalUI()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := ui.pressPrefix("Chat with " + isolated(c.Name) + ","); !ok {
+			t.Fatal("chat not in list")
+		}
+		if _, err := ui.waitFor(5*time.Second, func(b buttons) bool { return b.count("Start a video call") == 1 && !b.has("Join") }); err != nil {
+			t.Fatal("no Start a video call button")
+		}
+		began := time.Now()
+		if _, err := ui.press("Start a video call"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			ok, err := ui.press("Cancel")
+			t.Logf("Cancel pressed=%v err=%v; desktop back to none: %v", ok, err, waitDesktop(desktopNone, 10*time.Second) == nil)
+		}()
+		last := ""
+		for time.Since(began) < 3*time.Second {
+			b, _ := ui.list()
+			var seen []string
+			for _, s := range append([]string(b), ui.texts()...) {
+				l := strings.ToLower(s)
+				if strings.Contains(l, "ring") || strings.Contains(l, "notif") || s == "Start" || s == "Join" || s == "Cancel" {
+					seen = append(seen, strings.ReplaceAll(s, c.Name, "<group>"))
+				}
+			}
+			if now := strings.Join(seen, " | "); now != last {
+				t.Logf("+%4dms  %s", time.Since(began).Milliseconds(), now)
+				last = now
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	case "status":
 		st, err := getCallStatus(db, time.Now())
 		if err != nil {
