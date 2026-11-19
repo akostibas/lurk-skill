@@ -191,9 +191,28 @@ func toggle(on bool, whenOn, whenOff string) (want, press string) {
 	return whenOff, whenOn
 }
 
+// callOpts is how the desktop enters a call. The zero value is the quiet one:
+// muted, camera off, and (when starting) nobody's phone rings.
+type callOpts struct {
+	mic, camera bool
+	ring        bool // startCall only: ring the group's phones instead of just notifying
+}
+
 // joinCall joins the live group call in convArg from Signal Desktop. It refuses
 // to disturb a call the desktop is already in, and never starts a call itself.
-func joinCall(db *sqliteDB, convArg string, mic, camera bool) error {
+func joinCall(db *sqliteDB, convArg string, o callOpts) error {
+	return enterCall(db, convArg, false, o)
+}
+
+// startCall starts a new group call in convArg. It refuses when one is already
+// running there (join it instead) and when the desktop is busy with another.
+func startCall(db *sqliteDB, convArg string, o callOpts) error {
+	return enterCall(db, convArg, true, o)
+}
+
+// enterCall is the shared path. start is strict both ways: joining never starts
+// a call and starting never joins one, so a wrong guess can't ring a group.
+func enterCall(db *sqliteDB, convArg string, start bool, o callOpts) error {
 	c, err := resolveConv(db, convArg)
 	if err != nil {
 		return err
@@ -215,15 +234,24 @@ func joinCall(db *sqliteDB, convArg string, mic, camera bool) error {
 	for _, g := range st.Live {
 		live = live || g.ConvID == c.ID
 	}
-	if !live {
-		return fmt.Errorf("no live call in %q — lurk only joins a call that is already running, it never starts one", c.Name)
+	// header opens the lobby; confirm is the lobby's own button that enters the call.
+	header, confirm := "Join", "Join"
+	switch {
+	case start && c.Type != "group":
+		return fmt.Errorf("%q is not a group — lurk only starts group calls so far", c.Name)
+	case start && live:
+		return fmt.Errorf("a call is already running in %q — join it instead of starting another", c.Name)
+	case start:
+		header, confirm = "Start a video call", "Start"
+	case !live:
+		return fmt.Errorf("no live call in %q — joining never starts one; use start for that", c.Name)
 	}
 
 	ui, err := openSignalUI()
 	if err != nil {
 		return err
 	}
-	// The header's Join button only exists for the chat that is open, so open it.
+	// The header's call button only exists for the chat that is open, so open it.
 	// ponytail: only finds chats currently visible in the list (not scrolled away
 	// or archived); a chat with a live call was just active, so it's near the top.
 	if ok, err := ui.pressPrefix("Chat with " + isolated(c.Name) + ","); err != nil {
@@ -231,45 +259,65 @@ func joinCall(db *sqliteDB, convArg string, mic, camera bool) error {
 	} else if !ok {
 		return fmt.Errorf("can't find %q in Signal's chat list — scroll it into view (or unarchive it) and retry", c.Name)
 	}
-	b, err := ui.waitFor(5*time.Second, func(b buttons) bool { return b.hasPrefix(isolated(c.Name)) && b.has("Join") })
+	b, err := ui.waitFor(5*time.Second, func(b buttons) bool { return b.hasPrefix(isolated(c.Name)) && b.has(header) })
 	if err != nil {
-		return fmt.Errorf("opened %q but Signal shows no Join button — the call may have just ended", c.Name)
+		return fmt.Errorf("opened %q but Signal shows no %q button — the call may have just started or ended", c.Name, header)
 	}
-	// Exactly "Join": "Start a video call" would ring the whole group.
-	if b.count("Join") != 1 || b.has("Leave") {
-		return errors.New("Signal's window isn't in the expected state for joining; not pressing anything")
+	// Exact titles only, and never both: Join enters quietly, Start can ring a group.
+	if b.count(header) != 1 || b.has("Leave") || (start && b.has("Join")) {
+		return errors.New("Signal's window isn't in the expected state; not pressing anything")
 	}
-	if _, err := ui.press("Join"); err != nil {
+	if _, err := ui.press(header); err != nil {
 		return err
 	}
-	inLobby := func(b buttons) bool {
-		return b.has("Cancel") && b.count("Join") == 1 && (b.has("Mute mic") || b.has("Unmute mic"))
+	hasMic := func(b buttons) bool { return b.has("Mute mic") || b.has("Unmute mic") }
+	inLobby := func(b buttons) bool { return b.has("Cancel") && b.count(confirm) == 1 && hasMic(b) }
+	// cancel backs out of the lobby, but only if a lobby is what's on screen.
+	cancel := func(b buttons) {
+		if b.has("Cancel") && hasMic(b) {
+			ui.press("Cancel")
+		}
 	}
 	if b, err = ui.waitFor(8*time.Second, inLobby); err != nil {
-		return errors.New("pressed Join but Signal's call lobby didn't appear")
+		cancel(b)
+		return fmt.Errorf("pressed %q but Signal's call lobby didn't appear as expected; backed out", header)
 	}
 
-	// Each toggle's title names what pressing it would do, so it also reports state.
-	wantMic, flipMic := toggle(mic, "Mute mic", "Unmute mic")
-	wantCam, flipCam := toggle(camera, "Turn off camera", "Turn on camera")
-	for _, t := range [][2]string{{wantMic, flipMic}, {wantCam, flipCam}} {
-		if b.has(t[0]) {
+	// Each switch's title names what pressing it would do, so it also reports state.
+	wantMic, flipMic := toggle(o.mic, "Mute mic", "Unmute mic")
+	wantCam, flipCam := toggle(o.camera, "Turn off camera", "Turn on camera")
+	switches := [][2]string{{wantMic, flipMic}, {wantCam, flipCam}}
+	if start {
+		// ponytail: a group too large to ring has no ringing switch, so start
+		// refuses it rather than assume; teach it that lobby when it comes up.
+		wantRing, flipRing := toggle(o.ring, "Turn off ringing", "Turn on ringing")
+		switches = append(switches, [2]string{wantRing, flipRing})
+	}
+	for _, s := range switches {
+		if b.has(s[0]) {
 			continue
 		}
-		if _, err := ui.press(t[1]); err != nil {
+		if _, err := ui.press(s[1]); err != nil {
 			return err
 		}
 	}
-	ready := func(b buttons) bool { return inLobby(b) && b.has(wantMic) && b.has(wantCam) }
-	if _, err := ui.waitFor(5*time.Second, ready); err != nil {
-		ui.press("Cancel")
-		return errors.New("couldn't set the mic/camera as requested in Signal's lobby; cancelled without joining")
+	ready := func(b buttons) bool {
+		for _, s := range switches {
+			if !b.has(s[0]) {
+				return false
+			}
+		}
+		return inLobby(b)
 	}
-	if _, err := ui.press("Join"); err != nil {
+	if b, err = ui.waitFor(5*time.Second, ready); err != nil {
+		cancel(b)
+		return errors.New("couldn't confirm the mic/camera/ringing settings in Signal's lobby; cancelled without entering the call")
+	}
+	if _, err := ui.press(confirm); err != nil {
 		return err
 	}
 	if err := waitDesktop(desktopJoined, 15*time.Second); err != nil {
-		return fmt.Errorf("pressed Join in the lobby, but Signal hasn't confirmed it joined %q: %w", c.Name, err)
+		return fmt.Errorf("pressed %q in the lobby, but Signal hasn't confirmed it is on the call in %q: %w", confirm, c.Name, err)
 	}
 	return nil
 }

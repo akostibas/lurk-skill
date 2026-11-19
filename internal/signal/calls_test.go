@@ -70,12 +70,13 @@ func TestToggle(t *testing.T) {
 //
 //	LURK_LIVE_CALLS=status       go test ./internal/signal -run TestLiveCalls -v
 //	LURK_LIVE_CALLS=join:<conv>  …  (joins muted, camera off)
+//	LURK_LIVE_CALLS=start:<conv> …  (STARTS a real call: muted, camera off, no ringing)
 //	LURK_LIVE_CALLS=leave        …
 //	LURK_LIVE_CALLS=ui           …  (can lurk read Signal's buttons? presses nothing)
 func TestLiveCalls(t *testing.T) {
 	op, arg, _ := strings.Cut(os.Getenv("LURK_LIVE_CALLS"), ":")
 	if op == "" {
-		t.Skip("set LURK_LIVE_CALLS=status|join:<conv>|leave to run against the real Signal Desktop")
+		t.Skip("set LURK_LIVE_CALLS=status|ui|join:<conv>|start:<conv>|leave to run against the real Signal Desktop")
 	}
 	if op == "ui" { // reads Signal's buttons, presses nothing
 		start := time.Now()
@@ -110,12 +111,16 @@ func TestLiveCalls(t *testing.T) {
 		}
 		out, _ := json.MarshalIndent(st, "", "  ")
 		t.Logf("%s", out)
-	case "join":
-		start := time.Now()
-		if err := joinCall(db, arg, false, false); err != nil {
+	case "join", "start":
+		enter := joinCall
+		if op == "start" {
+			enter = startCall
+		}
+		began := time.Now()
+		if err := enter(db, arg, callOpts{}); err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("joined in %s", time.Since(start).Round(time.Millisecond))
+		t.Logf("%s: on the call in %s", op, time.Since(began).Round(time.Millisecond))
 	default:
 		t.Fatalf("unknown LURK_LIVE_CALLS op %q", op)
 	}
